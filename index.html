@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>ARAFURA — Rapoarte</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Ecran autentificare -->
+<div id="ecran-auth" class="ecran-auth" style="display:none;">
+  <form id="form-login" class="card-login">
+    <h1>ARAFURA</h1>
+    <p class="subtitlu">Rapoarte interne</p>
+    <label>E-mail
+      <input type="email" id="login-email" autocomplete="email" required>
+    </label>
+    <label>Parolă
+      <input type="password" id="login-parola" autocomplete="current-password" required>
+    </label>
+    <button type="submit">Intră</button>
+    <p class="eroare" id="login-eroare"></p>
+    <p class="nota">Conturile se creează de administrator. Nu există înregistrare din pagină.</p>
+  </form>
+</div>
+
+<!-- Aplicatia -->
+<div id="aplicatie" style="display:none;">
+  <header class="top-bar">
+    <div class="logo">ARAFURA</div>
+    <nav id="meniu" class="meniu"></nav>
+    <div class="user-box">
+      <span id="user-nume"></span>
+      <button id="btn-iesire" class="btn-mic">Ieşire</button>
+    </div>
+  </header>
+
+  <aside id="filtre-bar" class="filtre-bar" style="display:none;"></aside>
+
+  <main id="continut" class="continut">
+    <div class="incarca">Se încarcă…</div>
+  </main>
+
+  <footer class="footer">
+    <span id="footer-info"></span>
+  </footer>
+</div>
+
+<!-- Supabase JS v2 de pe CDN -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+
+</body>
+</html>
