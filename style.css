@@ -411,6 +411,10 @@ th.sortabil.activ .sage { opacity: 1; color: var(--accent); }
 
 /* tabele late: coloana denumire latime minima, prima coloana sticky pe mobile */
 .col-denumire { min-width: 280px; }
+.col-cod-bare { font-family: var(--mono); letter-spacing: -0.3px; }
+
+/* celule stoc negativ: scrise cu rosu (vederea „Pe produs" si „Pe gestiuni") */
+td.nr.neg { color: var(--danger); }
 
 @media (max-width: 720px) {
   .tabel-cu-sticky table th:first-child,
@@ -423,6 +427,36 @@ th.sortabil.activ .sage { opacity: 1; color: var(--accent); }
   }
   .tabel-cu-sticky table th:first-child { z-index: 3; background: var(--bg); }
   .col-denumire { min-width: 200px; }
+}
+
+/* ======== STOC — vederea „Pe produs" ========
+   Pe calculator: toate coloanele, cu scroll orizontal si primele doua coloane fixe.
+   Pe telefon (<700px): doar cod, denumire, pret achizitie, pret vanzare, total;
+   coloanele optionale (gestiuni, pe_drum, valoare_cost etc.) sunt ascunse. */
+.tabel-pe-produs { overflow-x: auto; }
+.tabel-pe-produs table { min-width: 100%; }
+
+@media (min-width: 721px) {
+  /* a doua coloana (cod_bare) e „sub" prima; a treia (denumire) e si ea sticky */
+  .tabel-pe-produs table th:nth-child(1),
+  .tabel-pe-produs table td:nth-child(1),
+  .tabel-pe-produs table th:nth-child(3),
+  .tabel-pe-produs table td:nth-child(3) {
+    position: sticky;
+    background: var(--card);
+    z-index: 2;
+  }
+  .tabel-pe-produs table th:nth-child(1),
+  .tabel-pe-produs table td:nth-child(1) { left: 0; }
+  .tabel-pe-produs table th:nth-child(3),
+  .tabel-pe-produs table td:nth-child(3) { left: 110px; box-shadow: 1px 0 0 var(--border); }
+  .tabel-pe-produs table th:nth-child(1),
+  .tabel-pe-produs table th:nth-child(3) { background: var(--bg); z-index: 3; }
+}
+
+@media (max-width: 700px) {
+  .tabel-pe-produs table .col-cod-bare,
+  .tabel-pe-produs table .col-opt { display: none; }
 }
 
 /* ======== FISA PRODUS ======== */

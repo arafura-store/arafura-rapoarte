@@ -49,7 +49,7 @@ const PAGINI = [
   { cod: 'stagneaza',         titlu: 'Marfă care stagnează' },
   { cod: 'stocuri-negative',  titlu: 'Stocuri negative' },
   { cod: 'retururi',          titlu: 'Retururi spre depozit' },
-  { cod: 'cautare',           titlu: 'Căutare produse' },
+  { cod: 'stoc',              titlu: 'Stoc' },
   { cod: 'activitate',        titlu: 'Activitate', doarAdmin: true },
 ];
 
@@ -112,6 +112,8 @@ function stareBadge(stare) {
 }
 
 function titluPagina(cod) {
+  // Alias istoric: pagina „Căutare produse" s-a redenumit „Stoc" (PAS 4).
+  if (cod === 'cautare') return 'Stoc';
   const p = PAGINI.find(x => x.cod === cod);
   return p ? p.titlu : (cod || 'pagină');
 }
@@ -247,7 +249,12 @@ async function routeaza() {
   const h = location.hash || '#/pe-scurt';
   const fara = h.replace(/^#\//, '');
   const [rutaBruta, qs] = fara.split('?');
-  const [ruta, param] = rutaBruta.split('/');
+  let [ruta, param] = rutaBruta.split('/');
+  // Alias istoric: #/cautare → #/stoc (PAS 4). Pastreaza parametrii.
+  if (ruta === 'cautare') {
+    location.replace('#/stoc' + (qs ? '?' + qs : ''));
+    return;
+  }
   const filtre = Object.fromEntries(new URLSearchParams(qs || ''));
   marcheazaMeniu(ruta);
   document.getElementById('filtre-bar').style.display = 'none';
@@ -262,7 +269,7 @@ async function routeaza() {
       case 'stagneaza':        return await pagStagneaza(filtre);
       case 'stocuri-negative': return await pagStocuriNegative(filtre);
       case 'retururi':         return await pagRetururi(filtre);
-      case 'cautare':          return await pagCautare(filtre);
+      case 'stoc':             return await pagStoc(filtre);
       case 'fisa':             return await pagFisa(param, filtre);
       case 'activitate':       return await pagActivitate(filtre);
       default:                 return await pagPeScurt();
@@ -300,24 +307,50 @@ function construiesteFiltreHTML(filtre, optiuni, listeExtra) {
   }
   if (optiuni.furnizor && (listeExtra?.furnizori?.length)) {
     const val = filtre.f || '';
+    const opts = listeExtra.furnizori.map(f => `<option value="${escapeHtml(f)}" ${val===f?'selected':''}>${escapeHtml(f)}</option>`).join('');
+    const extra = optiuni.extraFurnizor
+      ? `<option value="(fără furnizor)" ${val==='(fără furnizor)'?'selected':''}>(fără furnizor)</option>`
+      : '';
     partsHtml.push(`<label>Furnizor<select name="f">
       <option value="">— toţi —</option>
-      ${listeExtra.furnizori.map(f => `<option value="${escapeHtml(f)}" ${val===f?'selected':''}>${escapeHtml(f)}</option>`).join('')}
+      ${opts}${extra}
     </select></label>`);
   }
   if (optiuni.familie && (listeExtra?.familii?.length)) {
     const val = filtre.fam || '';
+    // PAS 4: familii poate fi array de string-uri (cod) sau array de {cod, nume}.
+    //        Se afiseaza „cod – nume" cand nume e prezent.
+    const opts = listeExtra.familii.map(f => {
+      const cod  = (typeof f === 'object') ? f.cod  : f;
+      const nume = (typeof f === 'object') ? (f.nume || '') : '';
+      const label = cod + (nume ? ' – ' + nume : '');
+      return `<option value="${escapeHtml(cod)}" ${val===cod?'selected':''}>${escapeHtml(label)}</option>`;
+    }).join('');
     partsHtml.push(`<label>Familie<select name="fam">
       <option value="">— toate —</option>
-      ${listeExtra.familii.map(f => `<option value="${escapeHtml(f)}" ${val===f?'selected':''}>${escapeHtml(f)}</option>`).join('')}
+      ${opts}
     </select></label>`);
   }
   if (optiuni.grupa) {
     const val = filtre.gr || '';
+    const extra = optiuni.extraGrupa
+      ? `<option value="(none)" ${val==='(none)'?'selected':''}>(fără grupă)</option>`
+      : '';
     partsHtml.push(`<label>Grupă<select name="gr">
       <option value="">— toate —</option>
       ${Object.entries(GRUPE).map(([k,v]) => `<option value="${k}" ${val===k?'selected':''}>${escapeHtml(v)}</option>`).join('')}
+      ${extra}
     </select></label>`);
+  }
+  if (optiuni.stoc && optiuni.stoc.length > 0) {
+    const val = filtre.st || (optiuni.stocDefault || 'in');
+    const opts = optiuni.stoc.map(v => `<option value="${v.val}" ${val===v.val?'selected':''}>${escapeHtml(v.txt)}</option>`).join('');
+    partsHtml.push(`<label>Stoc<select name="st">${opts}</select></label>`);
+  }
+  if (optiuni.mod && optiuni.mod.length > 0) {
+    const val = filtre.mod || (optiuni.modDefault || 'pe-gestiuni');
+    const opts = optiuni.mod.map(v => `<option value="${v.val}" ${val===v.val?'selected':''}>${escapeHtml(v.txt)}</option>`).join('');
+    partsHtml.push(`<label>Afişare<select name="mod">${opts}</select></label>`);
   }
   if (optiuni.cautare) {
     const val = filtre.q || '';
@@ -684,7 +717,11 @@ async function pagLipsuri(filtre) {
   const { data: furnData } = await stare.client.rpc('ar_sumar_pe_furnizori', { lim: 1000 });
   const furnizori = (furnData || []).map(x => x.furnizor).filter(x => x !== '(fără furnizor)').sort((a,b) => a.localeCompare(b, 'ro'));
   const { data: famData }  = await stare.client.rpc('ar_sumar_pe_familii',   { lim: 500 });
-  const familii = (famData || []).map(x => x.cod_familie).filter(x => x !== '(fără familie)').sort();
+  // PAS 4: enrich cu nume_familie (afisare „cod – nume" in dropdown)
+  const { data: famListaData } = await stare.client.rpc('ar_lista_familii');
+  const famMap = new Map((famListaData || []).map(x => [x.cod_familie, x.nume_familie]));
+  const familii = (famData || []).map(x => x.cod_familie).filter(x => x !== '(fără familie)').sort()
+    .map(cod => ({ cod, nume: famMap.get(cod) || '' }));
 
   construiesteFiltreHTML(filtre, {
     gestiune: 'magazin', furnizor: true, familie: true, grupa: true, cautare: true, descarca: true,
@@ -814,12 +851,16 @@ function coloaneCsvLipsuri() {
 
 async function pagStagneaza(filtre) {
   // Listele pentru filtre — doar la prima incarcare, cu limita micsorata pentru performanta
-  const [furnRes, famRes] = await Promise.all([
+  const [furnRes, famRes, famListaRes] = await Promise.all([
     stare.client.rpc('ar_sumar_pe_furnizori', { lim: 500 }),
     stare.client.rpc('ar_sumar_pe_familii',   { lim: 500 }),
+    stare.client.rpc('ar_lista_familii'),
   ]);
   const furnizori = (furnRes.data || []).map(x => x.furnizor).filter(x => x !== '(fără furnizor)').sort((a,b) => a.localeCompare(b, 'ro'));
-  const familii   = (famRes.data  || []).map(x => x.cod_familie).filter(x => x !== '(fără familie)').sort();
+  // PAS 4: enrich cu nume_familie (afisare „cod – nume" in dropdown)
+  const famMap = new Map((famListaRes.data || []).map(x => [x.cod_familie, x.nume_familie]));
+  const familii   = (famRes.data  || []).map(x => x.cod_familie).filter(x => x !== '(fără familie)').sort()
+    .map(cod => ({ cod, nume: famMap.get(cod) || '' }));
 
   construiesteFiltreHTML(filtre, {
     gestiune: 'all', furnizor: true, familie: true, grupa: true, cautare: true, descarca: true,
@@ -1086,67 +1127,226 @@ async function pagRetururi(filtre) {
 }
 
 // ============================================================================
-// PAGINA 6 — CĂUTARE PRODUSE
+// PAGINA 6 — STOC (fostă „Căutare produse"; PAS 4: 5 schimbări + comutator Pe gestiuni/Pe produs)
 // ============================================================================
 
-async function pagCautare(filtre) {
-  // Liste pentru dropdown-uri: top furnizori + top familii
-  const { data: furnData } = await stare.client.rpc('ar_sumar_pe_furnizori', { lim: 1000 });
-  const furnizori = (furnData || []).map(x => x.furnizor).filter(x => x !== '(fără furnizor)').sort((a,b) => a.localeCompare(b, 'ro'));
-  const { data: famData } = await stare.client.rpc('ar_sumar_pe_familii', { lim: 500 });
-  const familii = (famData || []).map(x => x.cod_familie).filter(x => x !== '(fără familie)').sort();
+const VEDERI_STOC = [
+  { val: '',               txt: '— tot —' },
+  { val: 'stagn',          txt: 'Stagnează (stoc, fără vânzare 8 săpt.)' },
+  { val: 'lipsa',          txt: 'Lipsă' },
+  { val: 'termin',         txt: 'Pe terminate' },
+  { val: 'negativ',        txt: 'Stoc negativ (marfă de rulaj)' },
+  { val: 'neg-toate',      txt: 'Stoc negativ (toate)' },
+  { val: 'sub-cost',       txt: 'Preţ sub preţul ultimei facturi' },
+  { val: 'sub-cost-mediu', txt: 'Preţ sub costul mediu' },
+  { val: 'fara-bar',       txt: 'Fără cod de bare' },
+  { val: 'fara-fam',       txt: 'Fără familie' },
+];
+
+// Aplica filtrele „Stoc" pe un query de ar_pozitii (vedere „Pe gestiuni")
+function aplicaFiltreStocPoz(q, filtre) {
+  if (filtre.g)   q = q.eq('cod_depozit', filtre.g);
+  if (filtre.f) {
+    if (filtre.f === '(fără furnizor)') q = q.or('furnizor.is.null,furnizor.eq.');
+    else                                q = q.eq('furnizor', filtre.f);
+  }
+  if (filtre.fam) q = q.eq('cod_familie', filtre.fam);
+  if (filtre.gr) {
+    if (filtre.gr === '(none)') q = q.or('cod_familie.is.null,cod_familie.eq.');
+    else                         q = q.like('cod_familie', filtre.gr + '%');
+  }
+  if (filtre.q) {
+    const t = filtre.q.trim();
+    q = q.or(`cod_art.ilike.%${t}%,nume_art.ilike.%${t}%,cod_bare.ilike.%${t}%`);
+  }
+  // Vedere (probleme)
+  switch (filtre.v) {
+    case 'stagn':          q = q.eq('stagneaza', true); break;
+    case 'lipsa':          q = q.eq('stare', 'lipsa'); break;
+    case 'termin':         q = q.eq('stare', 'pe terminate'); break;
+    case 'negativ':        q = q.eq('stare', 'stoc negativ – de verificat'); break;
+    case 'neg-toate':      q = q.lt('stoc', 0); break;
+    case 'sub-cost':       q = q.eq('stoc_sub_cost', true); break;
+    case 'sub-cost-mediu': q = q.eq('pret_sub_cost_mediu', true); break;
+    case 'fara-bar':       q = q.or('cod_bare.is.null,cod_bare.eq.'); break;
+    case 'fara-fam':       q = q.or('cod_familie.is.null,cod_familie.eq.'); break;
+  }
+  // Selector stoc
+  const st = filtre.st || 'in';
+  if      (st === 'in')   q = q.gt('stoc', 0);
+  else if (st === 'fara') q = q.eq('stoc', 0);
+  // 'toate' → fara conditie
+  return q;
+}
+
+// Aplica filtrele „Stoc" pe un query de ar_produse (vedere „Pe produs")
+function aplicaFiltreStocProd(q, filtre) {
+  if (filtre.g) {
+    // „are stoc in gestiunea X" — exprimat ca stoc_<g> > 0
+    const col = 'stoc_' + filtre.g;
+    q = q.gt(col, 0);
+  }
+  if (filtre.f) {
+    if (filtre.f === '(fără furnizor)') q = q.or('furnizor.is.null,furnizor.eq.');
+    else                                q = q.eq('furnizor', filtre.f);
+  }
+  if (filtre.fam) q = q.eq('cod_familie', filtre.fam);
+  if (filtre.gr) {
+    if (filtre.gr === '(none)') q = q.or('cod_familie.is.null,cod_familie.eq.');
+    else                         q = q.like('cod_familie', filtre.gr + '%');
+  }
+  if (filtre.q) {
+    const t = filtre.q.trim();
+    q = q.or(`cod_art.ilike.%${t}%,nume_art.ilike.%${t}%,cod_bare.ilike.%${t}%`);
+  }
+  // Vedere (probleme)
+  switch (filtre.v) {
+    case 'stagn':          q = q.eq('stagneaza_prod', true); break;
+    case 'lipsa':          q = q.eq('are_lipsa', true); break;
+    case 'termin':         q = q.eq('are_termin', true); break;
+    case 'negativ':        q = q.eq('are_neg_rulaj', true); break;
+    case 'neg-toate':      q = q.eq('are_neg_toate', true); break;
+    case 'sub-cost':       q = q.eq('are_sub_cost', true); break;
+    case 'sub-cost-mediu': q = q.eq('are_sub_cost_mediu', true); break;
+    case 'fara-bar':       q = q.or('cod_bare.is.null,cod_bare.eq.'); break;
+    case 'fara-fam':       q = q.or('cod_familie.is.null,cod_familie.eq.'); break;
+  }
+  // Selector stoc pe totalul produsului
+  const st = filtre.st || 'in';
+  if      (st === 'in')   q = q.or('stoc_total.gt.0,pe_drum.gt.0');
+  else if (st === 'fara') q = q.eq('stoc_total', 0).eq('pe_drum', 0);
+  // 'toate' → fara conditie
+  return q;
+}
+
+async function pagStoc(filtre) {
+  const mod = filtre.mod || 'pe-gestiuni';
+
+  // Listele complete pentru dropdown-uri (nu doar stagneaza, ca pe alte pagini)
+  const [furnRes, famRes] = await Promise.all([
+    stare.client.rpc('ar_lista_furnizori'),
+    stare.client.rpc('ar_lista_familii'),
+  ]);
+  const furnizori = (furnRes.data || []).map(x => x.furnizor).filter(x => x !== '(fără furnizor)').sort((a,b) => a.localeCompare(b, 'ro'));
+  const familii = (famRes.data || []).map(x => ({ cod: x.cod_familie, nume: x.nume_familie || '' }));
 
   construiesteFiltreHTML(filtre, {
-    gestiune: 'all', furnizor: true, familie: true, grupa: true, cautare: true, descarca: true,
-    vedere: [
-      { val: '',        txt: '— tot —' },
-      { val: 'stagn',   txt: 'Stagnează (stoc>0, fără vânzare 8s)' },
-      { val: 'lipsa',   txt: 'Lipsă' },
-      { val: 'termin',  txt: 'Pe terminate' },
-      { val: 'negativ', txt: 'Stoc negativ (rulaj)' },
-      { val: 'sub-cost',txt: 'Preţ sub cost' },
-      { val: 'fara-bar',txt: 'Fără cod de bare' },
+    gestiune: 'all',
+    furnizor: true, extraFurnizor: true,
+    familie: true,
+    grupa: true, extraGrupa: true,
+    cautare: true, descarca: true,
+    vedere: VEDERI_STOC, vedereDefault: '',
+    stoc: [
+      { val: 'in',    txt: 'În stoc' },
+      { val: 'fara',  txt: 'Fără stoc' },
+      { val: 'toate', txt: 'Toate' },
     ],
+    stocDefault: 'in',
+    mod: [
+      { val: 'pe-gestiuni', txt: 'Pe gestiuni' },
+      { val: 'pe-produs',   txt: 'Pe produs' },
+    ],
+    modDefault: 'pe-gestiuni',
   }, { furnizori, familii });
 
+  // Total selectie (sus) — RPC in paralel cu lista
+  const paramsTotal = {
+    p_g:   filtre.g   || null,
+    p_f:   filtre.f   || null,
+    p_fam: filtre.fam || null,
+    p_gr:  filtre.gr  || null,
+    p_q:   filtre.q   || null,
+    p_v:   filtre.v   || null,
+    p_st:  filtre.st  || 'in',
+  };
+  const totalRpc = mod === 'pe-produs' ? 'ar_stoc_total_prod' : 'ar_stoc_total_poz';
+  const totalPromise = stare.client.rpc(totalRpc, paramsTotal);
+
+  if (mod === 'pe-produs') {
+    await pagStocPeProdus(filtre, totalPromise);
+  } else {
+    await pagStocPeGestiuni(filtre, totalPromise);
+  }
+}
+
+function renderTotalSelectieHTML(t, modProd) {
+  if (!t) t = {};
+  const nrPoz  = Number(t.nr_pozitii || 0);
+  const nrProd = Number(t.nr_produse || 0);
+  const buc    = Number(t.bucati || 0);
+  const vc     = Number(t.valoare_cost || 0);
+  const vp     = Number(t.valoare_pret || 0);
+  const etLinie = modProd
+    ? `<strong>${fmtInt(nrProd)}</strong> produse`
+    : `<strong>${fmtInt(nrPoz)}</strong> poziţii &nbsp;·&nbsp; <strong>${fmtInt(nrProd)}</strong> produse diferite`;
+  return `
+    <div class="cartele" style="grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); margin-bottom: 12px;">
+      <div class="cartela"><div class="eticheta">Selecţie</div><div class="valoare" style="font-size:16px;">${etLinie}</div></div>
+      <div class="cartela"><div class="eticheta">Bucăţi</div><div class="valoare">${fmtNr(buc, 2)}</div></div>
+      <div class="cartela"><div class="eticheta">Valoare la cost</div><div class="valoare">${fmtBani(vc)}</div></div>
+      <div class="cartela"><div class="eticheta">Valoare la preţ vz (cu TVA)</div><div class="valoare">${fmtBani(vp)}</div></div>
+    </div>`;
+}
+
+// ============================================================================
+// Stoc — vederea „Pe gestiuni"
+// ============================================================================
+
+async function pagStocPeGestiuni(filtre, totalPromise) {
   const pag = Number(filtre.pag) || 1;
   const implicitSort = { col: 'valoare_cost', dir: 'desc' };
-  const constr = () => aplicaSortare(queryPozitii(filtre, null), filtre, implicitSort);
-  const { randuri, total, from, to } = await fetchPagina(constr, pag);
+  const constr = () => {
+    let q = stare.client.from('ar_pozitii').select('*', { count: 'exact' }).eq('e_marfa', true);
+    q = aplicaFiltreStocPoz(q, filtre);
+    return aplicaSortare(q, filtre, implicitSort);
+  };
+  const [listaRes, totalRes] = await Promise.all([ fetchPagina(constr, pag), totalPromise ]);
+  const { randuri, total, from, to } = listaRes;
+  const t = (totalRes.data && totalRes.data[0]) || {};
 
   document.getElementById('continut').innerHTML = `
-    <h2 class="titlu-pagina">Căutare produse</h2>
+    <h2 class="titlu-pagina">Stoc</h2>
+    ${renderTotalSelectieHTML(t, false)}
     ${renderPaginareHTML(from, to, total, pag)}
     <div class="tabel-wrap tabel-cu-sticky">
       <table>
         <thead><tr>
           ${thSort('cod_depozit', 'Gestiune', '', filtre, implicitSort)}
           ${thSort('cod_art', 'Cod', '', filtre, implicitSort)}
+          ${thSort('cod_bare', 'Cod de bare', 'col-cod-bare', filtre, implicitSort)}
           ${thSort('nume_art', 'Denumire', 'col-denumire', filtre, implicitSort)}
           ${thSort('furnizor', 'Furnizor', '', filtre, implicitSort)}
           ${thSort('cod_familie', 'Familie', '', filtre, implicitSort)}
           ${thSort('stoc', 'Stoc', 'nr', filtre, implicitSort)}
           ${thSort('pe_drum', 'Pe drum', 'nr', filtre, implicitSort)}
           ${thSort('valoare_cost', 'Val. cost', 'nr', filtre, implicitSort)}
-          ${thSort('pret_lista', 'Preţ listă', 'nr', filtre, implicitSort)}
+          ${thSort('pret_achizitie', 'Preţ achiziţie', 'nr', filtre, implicitSort)}
+          ${thSort('pret_lista', 'Preţ vânzare', 'nr', filtre, implicitSort)}
           ${thSort('adaos', 'Adaos', 'nr', filtre, implicitSort)}
           ${thSort('stare', 'Stare', '', filtre, implicitSort)}
         </tr></thead>
         <tbody>
-        ${randuri.map(r => `
+        ${randuri.map(r => {
+          const tooltip = (r.factura_furnizor || r.factura_data)
+            ? ` title="${escapeHtml((r.factura_furnizor || '—') + (r.factura_data ? ', ' + fmtData(r.factura_data) : ''))}"` : '';
+          return `
           <tr class="clickabil" data-cod="${escapeHtml(r.cod_art)}">
             <td>${escapeHtml(gestiuneNume(r.cod_depozit))}</td>
             <td><code>${escapeHtml(r.cod_art)}</code></td>
+            <td class="col-cod-bare mic">${escapeHtml(r.cod_bare || '')}</td>
             <td class="col-denumire">${escapeHtml(r.nume_art || '')}</td>
             <td class="mic">${escapeHtml(r.furnizor || '')}</td>
             <td class="mic">${escapeHtml(r.cod_familie || '')}</td>
-            <td class="nr">${fmtNr(r.stoc, 2)}</td>
+            <td class="nr ${Number(r.stoc) < 0 ? 'neg' : ''}">${fmtNr(r.stoc, 2)}</td>
             <td class="nr">${fmtNr(r.pe_drum, 2)}</td>
             <td class="nr">${fmtBani(r.valoare_cost)}</td>
+            <td class="nr"${tooltip}>${r.pret_achizitie ? fmtBani(r.pret_achizitie) : ''}</td>
             <td class="nr">${r.pret_lista ? fmtBani(r.pret_lista) : ''}</td>
             <td class="nr">${r.adaos != null ? fmtProc(r.adaos) : ''}</td>
             <td>${stareBadge(r.stare)}</td>
-          </tr>`).join('')}
+          </tr>`;
+        }).join('')}
         </tbody>
       </table>
     </div>
@@ -1156,20 +1356,126 @@ async function pagCautare(filtre) {
   activeazaPaginare();
   activeazaSortare(filtre, implicitSort);
   document.getElementById('btn-descarca').addEventListener('click', () => {
-    descarcaCuBucla('cautare', [
-      { titlu: 'Gestiune', val: r => gestiuneNumeFull(r.cod_depozit) },
-      { titlu: 'Cod',      val: 'cod_art' },
-      { titlu: 'Denumire', val: 'nume_art' },
-      { titlu: 'Cod bare', val: 'cod_bare' },
-      { titlu: 'Furnizor', val: 'furnizor' },
-      { titlu: 'Familie',  val: 'cod_familie' },
-      { titlu: 'Stoc',     val: 'stoc' },
-      { titlu: 'Pe drum',  val: 'pe_drum' },
+    descarcaCuBucla('stoc-pe-gestiuni', [
+      { titlu: 'Gestiune',    val: r => gestiuneNumeFull(r.cod_depozit) },
+      { titlu: 'Cod',         val: 'cod_art' },
+      { titlu: 'Cod de bare', val: 'cod_bare' },
+      { titlu: 'Denumire',    val: 'nume_art' },
+      { titlu: 'Furnizor',    val: 'furnizor' },
+      { titlu: 'Familie',     val: 'cod_familie' },
+      { titlu: 'Stoc',        val: 'stoc' },
+      { titlu: 'Pe drum',     val: 'pe_drum' },
       { titlu: 'Valoare cost', val: 'valoare_cost' },
-      { titlu: 'Preţ listă',   val: 'pret_lista' },
-      { titlu: 'Preţ achiz.',  val: 'pret_achizitie' },
-      { titlu: 'Adaos',    val: 'adaos' },
-      { titlu: 'Stare',    val: r => STARE_DISPLAY[r.stare] || r.stare || '' },
+      { titlu: 'Preţ achiziţie', val: 'pret_achizitie' },
+      { titlu: 'Furnizor factură', val: 'factura_furnizor' },
+      { titlu: 'Data factură', val: r => fmtData(r.factura_data) },
+      { titlu: 'Preţ vânzare', val: 'pret_lista' },
+      { titlu: 'Adaos',       val: 'adaos' },
+      { titlu: 'Stare',       val: r => STARE_DISPLAY[r.stare] || r.stare || '' },
+    ], constr, total);
+  });
+}
+
+// ============================================================================
+// Stoc — vederea „Pe produs"
+// ============================================================================
+
+const GEST_PE_PRODUS = [
+  { cod: '70', col: 'stoc_70', nume: 'Depozit Papetărie' },
+  { cod: '10', col: 'stoc_10', nume: 'Depozit IT' },
+  { cod: '40', col: 'stoc_40', nume: 'Showroom' },
+  { cod: '3',  col: 'stoc_3',  nume: 'Tomis 3' },
+  { cod: '16', col: 'stoc_16', nume: 'Medgidia' },
+  { cod: '64', col: 'stoc_64', nume: 'Năvodari' },
+  { cod: '32', col: 'stoc_32', nume: 'Babadag' },
+  { cod: '21', col: 'stoc_21', nume: 'Poarta 6' },
+  { cod: '12', col: 'stoc_12', nume: 'Marvimex' },
+];
+
+async function pagStocPeProdus(filtre, totalPromise) {
+  const pag = Number(filtre.pag) || 1;
+  const implicitSort = { col: 'valoare_cost', dir: 'desc' };
+  const constr = () => {
+    let q = stare.client.from('ar_produse').select('*', { count: 'exact' }).eq('e_marfa', true);
+    q = aplicaFiltreStocProd(q, filtre);
+    return aplicaSortare(q, filtre, implicitSort);
+  };
+  const [listaRes, totalRes] = await Promise.all([ fetchPagina(constr, pag), totalPromise ]);
+  const { randuri, total, from, to } = listaRes;
+  const t = (totalRes.data && totalRes.data[0]) || {};
+
+  const celStoc = (n, extraCls) => {
+    const v = Number(n || 0);
+    const cls = 'nr' + (extraCls ? ' ' + extraCls : '') + (v < 0 ? ' neg' : '');
+    const txt = v === 0 ? '' : fmtNr(v, 2);
+    return `<td class="${cls}">${txt}</td>`;
+  };
+
+  document.getElementById('continut').innerHTML = `
+    <h2 class="titlu-pagina">Stoc</h2>
+    ${renderTotalSelectieHTML(t, true)}
+    ${renderPaginareHTML(from, to, total, pag)}
+    <div class="tabel-wrap tabel-cu-sticky tabel-pe-produs">
+      <table>
+        <thead><tr>
+          ${thSort('cod_art',       'Cod',             '', filtre, implicitSort)}
+          ${thSort('cod_bare',      'Cod de bare',     'col-cod-bare', filtre, implicitSort)}
+          ${thSort('nume_art',      'Denumire',        'col-denumire', filtre, implicitSort)}
+          ${thSort('cod_familie',   'Familie',         'col-opt', filtre, implicitSort)}
+          ${thSort('furnizor',      'Furnizor',        'col-opt', filtre, implicitSort)}
+          ${thSort('pret_achizitie','Preţ achiziţie',  'nr col-opt', filtre, implicitSort)}
+          ${thSort('pret_lista',    'Preţ vânzare',    'nr', filtre, implicitSort)}
+          ${thSort('adaos',         'Adaos',           'nr col-opt', filtre, implicitSort)}
+          ${GEST_PE_PRODUS.map(g => thSort(g.col, g.nume, 'nr col-opt', filtre, implicitSort)).join('')}
+          ${thSort('pe_drum',       'Pe drum',         'nr col-opt', filtre, implicitSort)}
+          ${thSort('stoc_total',    'Total stoc',      'nr', filtre, implicitSort)}
+          ${thSort('valoare_cost',  'Valoare cost',    'nr col-opt', filtre, implicitSort)}
+        </tr></thead>
+        <tbody>
+        ${randuri.map(r => {
+          const tooltip = (r.factura_furnizor || r.factura_data)
+            ? ` title="${escapeHtml((r.factura_furnizor || '—') + (r.factura_data ? ', ' + fmtData(r.factura_data) : ''))}"` : '';
+          return `
+          <tr class="clickabil" data-cod="${escapeHtml(r.cod_art)}">
+            <td><code>${escapeHtml(r.cod_art)}</code></td>
+            <td class="col-cod-bare mic">${escapeHtml(r.cod_bare || '')}</td>
+            <td class="col-denumire">${escapeHtml(r.nume_art || '')}</td>
+            <td class="col-opt mic">${escapeHtml(r.cod_familie || '')}</td>
+            <td class="col-opt mic">${escapeHtml(r.furnizor || '')}</td>
+            <td class="nr col-opt"${tooltip}>${r.pret_achizitie ? fmtBani(r.pret_achizitie) : ''}</td>
+            <td class="nr">${r.pret_lista ? fmtBani(r.pret_lista) : ''}</td>
+            <td class="nr col-opt">${r.adaos != null ? fmtProc(r.adaos) : ''}</td>
+            ${GEST_PE_PRODUS.map(g => celStoc(r[g.col], 'col-opt')).join('')}
+            <td class="nr col-opt">${Number(r.pe_drum || 0) === 0 ? '' : fmtNr(r.pe_drum, 2)}</td>
+            <td class="nr ${Number(r.stoc_total) < 0 ? 'neg' : ''}">${fmtNr(r.stoc_total, 2)}</td>
+            <td class="nr col-opt">${fmtBani(r.valoare_cost)}</td>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${renderPaginareHTML(from, to, total, pag)}
+  `;
+  activeazaFisaLink();
+  activeazaPaginare();
+  activeazaSortare(filtre, implicitSort);
+  document.getElementById('btn-descarca').addEventListener('click', () => {
+    descarcaCuBucla('stoc-pe-produs', [
+      { titlu: 'Cod',          val: 'cod_art' },
+      { titlu: 'Cod de bare',  val: 'cod_bare' },
+      { titlu: 'Denumire',     val: 'nume_art' },
+      { titlu: 'Familie',      val: 'cod_familie' },
+      { titlu: 'Furnizor',     val: 'furnizor' },
+      { titlu: 'Preţ achiziţie', val: 'pret_achizitie' },
+      { titlu: 'Furnizor factură', val: 'factura_furnizor' },
+      { titlu: 'Data factură', val: r => fmtData(r.factura_data) },
+      { titlu: 'Preţ vânzare', val: 'pret_lista' },
+      { titlu: 'Adaos',        val: 'adaos' },
+      ...GEST_PE_PRODUS.map(g => ({ titlu: g.nume, val: g.col })),
+      { titlu: 'Pe drum',      val: 'pe_drum' },
+      { titlu: 'Total stoc',   val: 'stoc_total' },
+      { titlu: 'Valoare cost', val: 'valoare_cost' },
+      { titlu: 'Valoare preţ', val: 'valoare_pret' },
     ], constr, total);
   });
 }
