@@ -104,6 +104,29 @@ function escapeHtml(s) {
 }
 function gestiuneNume(cod) { return GEST_MAP[cod]?.nume || cod; }
 function gestiuneNumeFull(cod) { return GEST_MAP[cod]?.nume_full || cod; }
+function esteMagazin(cod) { return GEST_MAP[cod]?.tip === 'magazin'; }
+
+// PAS 5 A: eticheta mica „cu TVA" / „fără TVA" (sub capul de coloană sau sub o cifră mare).
+function etichetaTva(cuTva) {
+  return `<small class="eticheta-tva">${cuTva ? 'cu TVA' : 'fără TVA'}</small>`;
+}
+// Capul de coloană în două rânduri: titlu + mică linie cu TVA. Folosit cu `thSortHtml`.
+function capTva(titlu, cuTva) {
+  return escapeHtml(titlu) + '<br>' + etichetaTva(cuTva);
+}
+function capTvaMix(titlu) {
+  // „cu TVA la magazine / fără TVA la depozite"
+  return escapeHtml(titlu) + '<br><small class="eticheta-tva">cu/fără TVA</small>';
+}
+// PAS 5 A: preţ de raft pentru un rând din ar_pozitii — depinde de tipul gestiunii.
+function pretVzHtml(r) {
+  const val = esteMagazin(r.cod_depozit) ? r.pret_lista : r.pret_lista_fara_tva;
+  return val ? fmtBani(val) : '';
+}
+function pretVzVal(r) {
+  // pentru CSV (număr simplu, fără TVA suffix)
+  return esteMagazin(r.cod_depozit) ? r.pret_lista : r.pret_lista_fara_tva;
+}
 function stareBadge(stare) {
   if (!stare) return '';
   const cls = STARE_CLASA[stare] || '';
@@ -454,6 +477,64 @@ function thSort(col, label, cls, filtre, implicit) {
   const sageata = activ ? (curentDir === 'asc' ? '▲' : '▼') : '⇅';
   return `<th class="${cls||''} sortabil ${activ?'activ':''}" data-sort="${col}">${escapeHtml(label)} <span class="sage">${sageata}</span></th>`;
 }
+// Variantă cu label HTML (pt. cap pe două rânduri: titlu + „cu/fără TVA").
+function thSortHtml(col, labelHtml, cls, filtre, implicit) {
+  const curentCol = filtre.sort || implicit?.col || '';
+  const curentDir = filtre.dir  || implicit?.dir || 'desc';
+  const activ = curentCol === col;
+  const sageata = activ ? (curentDir === 'asc' ? '▲' : '▼') : '⇅';
+  return `<th class="${cls||''} sortabil ${activ?'activ':''}" data-sort="${col}">${labelHtml} <span class="sage">${sageata}</span></th>`;
+}
+
+// PAS 5 B.3: sortare client pe tabele sumar, fără hash.
+// Convenţie:
+//   - <table class="sort-client">
+//   - <th class="sort-sk" data-sk-type="nr|text">...</th>
+//   - <td data-sv="valoare brută pentru sort">afișat</td> (dacă lipseşte data-sv, se foloseşte textContent)
+//   - <tfoot> NU se mută la sort (rândul de total rămâne jos).
+function initSortClient(container) {
+  const root = container || document;
+  root.querySelectorAll('table.sort-client').forEach(tbl => {
+    if (tbl.dataset.sortInit === '1') return;
+    tbl.dataset.sortInit = '1';
+    const headerCells = [...tbl.querySelectorAll('thead th')];
+    headerCells.forEach((th, idx) => {
+      if (!th.classList.contains('sort-sk')) return;
+      th.classList.add('sortabil');
+      if (!th.querySelector('.sage')) th.insertAdjacentHTML('beforeend', ' <span class="sage">⇅</span>');
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', () => {
+        const prev = th.dataset.skDir || '';
+        const newDir = prev === 'asc' ? 'desc' : 'asc';
+        headerCells.forEach(h => {
+          if (!h.classList.contains('sort-sk')) return;
+          h.dataset.skDir = '';
+          h.classList.remove('activ');
+          const s = h.querySelector('.sage'); if (s) s.textContent = '⇅';
+        });
+        th.dataset.skDir = newDir;
+        th.classList.add('activ');
+        const s = th.querySelector('.sage'); if (s) s.textContent = newDir === 'asc' ? '▲' : '▼';
+        const type = th.dataset.skType || 'text';
+        const tbody = tbl.querySelector('tbody'); if (!tbody) return;
+        const rows = [...tbody.querySelectorAll(':scope > tr')];
+        rows.sort((a, b) => {
+          const ca = a.children[idx], cb = b.children[idx];
+          const va = ca?.dataset.sv ?? ca?.textContent ?? '';
+          const vb = cb?.dataset.sv ?? cb?.textContent ?? '';
+          if (type === 'nr') {
+            const na = Number(va) || 0, nb = Number(vb) || 0;
+            return newDir === 'asc' ? na - nb : nb - na;
+          }
+          return newDir === 'asc'
+            ? String(va).localeCompare(String(vb), 'ro')
+            : String(vb).localeCompare(String(va), 'ro');
+        });
+        rows.forEach(r => tbody.appendChild(r));
+      });
+    });
+  });
+}
 function activeazaSortare(filtre, implicit) {
   document.querySelectorAll('th.sortabil[data-sort]').forEach(th => {
     th.addEventListener('click', () => {
@@ -595,71 +676,96 @@ async function pagPeScurt() {
       ${fmtInt(s.rand_pozitii)} poziţii în total
     </p>
     <div class="cartele">
-      <a class="cartela cartela-link" data-ruta="stagneaza"><div class="eticheta">Stoc total (marfă)</div><div class="valoare">${fmtBani(s.stoc_total)}</div></a>
-      <div class="cartela"><div class="eticheta">Vânzări 8 săpt. (magazine, fără TVA)</div><div class="valoare">${fmtBani(s.vanzari_8w_lei)}</div></div>
+      <a class="cartela cartela-link" data-ruta="stagneaza"><div class="eticheta">Stoc total (la cost)</div><div class="valoare">${fmtBani(s.stoc_total)} ${etichetaTva(false)}</div></a>
+      <div class="cartela"><div class="eticheta">Stoc preţ vânzare – magazine</div><div class="valoare">${fmtBani(s.stoc_pret_mag_cu_tva)} ${etichetaTva(true)}</div></div>
+      <div class="cartela"><div class="eticheta">Stoc preţ vânzare – depozite</div><div class="valoare">${fmtBani(s.stoc_pret_dep_fara_tva)} ${etichetaTva(false)}</div></div>
+      <div class="cartela"><div class="eticheta">Vânzări 8 săpt. (magazine)</div><div class="valoare">${fmtBani(s.vanzari_8w_lei)} ${etichetaTva(true)}</div></div>
       <a class="cartela danger cartela-link" data-ruta="lipsuri" data-v="lipsa"><div class="eticheta">Lipsă</div><div class="valoare">${fmtInt(s.nr_lipsa)}</div></a>
       <a class="cartela warn cartela-link"   data-ruta="lipsuri" data-v="termin"><div class="eticheta">Pe terminate</div><div class="valoare">${fmtInt(s.nr_termin)}</div></a>
       <a class="cartela cartela-link"        data-ruta="stocuri-negative"><div class="eticheta">Stoc negativ total (magazine)</div><div class="valoare">${fmtInt(s.nr_stoc_negativ_mag_total)}</div></a>
-      <a class="cartela cartela-link"        data-ruta="stagneaza"><div class="eticheta">Stoc fără vânzare</div><div class="valoare">${fmtBani(s.stoc_fara_vz_total)}</div></a>
-      <div class="cartela warn"><div class="eticheta">Pierdere pe săptămână (lipsă, fără TVA)</div><div class="valoare">${fmtBani(s.pierdere_sapt_total)}</div></div>
+      <a class="cartela cartela-link"        data-ruta="stagneaza"><div class="eticheta">Stoc fără vânzare (la cost)</div><div class="valoare">${fmtBani(s.stoc_fara_vz_total)} ${etichetaTva(false)}</div></a>
+      <div class="cartela warn"><div class="eticheta">Pierdere pe săptămână (lipsă)</div><div class="valoare">${fmtBani(s.pierdere_sapt_total)} ${etichetaTva(true)}</div></div>
     </div>
 
-    <h3>Vânzări pe săptămână, pe magazin (lei fără TVA)</h3>
+    <h3>Vânzări pe săptămână, pe magazin (lei cu TVA)</h3>
     ${saptOrdered.length === 0 ? `<div class="mesaj danger" style="margin-bottom:12px;">
       Nu s-au încărcat date de vânzări pe săptămână.
       ${vzMag.error ? `Eroare RPC: <code>${escapeHtml(vzMag.error.message || JSON.stringify(vzMag.error))}</code>` : 'Verifică consola (F12).'}
     </div>` : ''}
     <div class="tabel-wrap">
-      <table>
+      <table class="sort-client">
         <thead><tr>
-          <th>Săpt.</th>
-          ${magazineOrder.map(m => `<th class="nr">${escapeHtml(gestiuneNume(m))}</th>`).join('')}
-          <th class="nr">Total</th>
+          <th class="sort-sk" data-sk-type="text">Săpt.</th>
+          ${magazineOrder.map(m => `<th class="nr sort-sk" data-sk-type="nr">${escapeHtml(gestiuneNume(m))}</th>`).join('')}
+          <th class="nr sort-sk" data-sk-type="nr">Total</th>
         </tr></thead>
         <tbody>${saptOrdered.map(z => {
           let totalSapt = 0;
           const cells = magazineOrder.map(m => {
             const v = matr[z]?.[m] || 0;
             totalSapt += v;
-            return `<td class="nr">${fmtBani(v)}</td>`;
+            return `<td class="nr" data-sv="${v}">${fmtBani(v)}</td>`;
           });
-          return `<tr><td class="mic">${fmtData(z)}</td>${cells.join('')}<td class="nr"><strong>${fmtBani(totalSapt)}</strong></td></tr>`;
+          return `<tr><td class="mic" data-sv="${z}">${fmtData(z)}</td>${cells.join('')}<td class="nr" data-sv="${totalSapt}"><strong>${fmtBani(totalSapt)}</strong></td></tr>`;
         }).join('')}
-          <tr style="border-top:2px solid var(--border);">
+        </tbody>
+        <tfoot>
+          <tr class="rand-total">
             <td><strong>Total 8 săpt.</strong></td>
             ${magazineOrder.map(m => `<td class="nr"><strong>${fmtBani(totalPerMag[m])}</strong></td>`).join('')}
             <td class="nr"><strong>${fmtBani(mediaTotal * 8)}</strong></td>
           </tr>
-          <tr>
+          <tr class="rand-total">
             <td class="mic">Medie / săpt.</td>
             ${magazineOrder.map(m => `<td class="nr mic">${fmtBani(totalPerMag[m]/8)}</td>`).join('')}
             <td class="nr mic">${fmtBani(mediaTotal)}</td>
           </tr>
-        </tbody>
+        </tfoot>
       </table>
     </div>
 
     <div class="tabele-paralele" style="margin-top:16px;">
       <div class="tabel-wrap">
-        <table>
-          <thead><tr><th>Gestiune</th><th class="nr">Stoc fără vânzare</th></tr></thead>
-          <tbody>${gestList.map(g => `
+        <table class="sort-client">
+          <thead><tr>
+            <th class="sort-sk" data-sk-type="text">Gestiune</th>
+            <th class="nr sort-sk" data-sk-type="nr">Stoc fără vânzare<br>${etichetaTva(false)}</th>
+          </tr></thead>
+          <tbody>${gestList.sort((a,b) => b.valoare - a.valoare).map(g => `
             <tr class="clickabil" data-ruta="stagneaza" data-g="${escapeHtml(g.cod)}">
-              <td>${escapeHtml(g.nume)}</td><td class="nr">${fmtBani(g.valoare)}</td></tr>`).join('')}
+              <td data-sv="${escapeHtml(g.nume)}">${escapeHtml(g.nume)}</td>
+              <td class="nr" data-sv="${g.valoare}">${fmtBani(g.valoare)}</td></tr>`).join('')}
           </tbody>
+          <tfoot>
+            <tr class="rand-total">
+              <td><strong>Total</strong></td>
+              <td class="nr"><strong>${fmtBani(s.stoc_fara_vz_total)}</strong></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
       <div class="tabel-wrap">
-        <table>
-          <thead><tr><th>Furnizor (top 10)</th><th class="nr">Stoc fără vânzare</th></tr></thead>
+        <table class="sort-client">
+          <thead><tr>
+            <th class="sort-sk" data-sk-type="text">Furnizor (primii 10 după valoare)</th>
+            <th class="nr sort-sk" data-sk-type="nr">Stoc fără vânzare<br>${etichetaTva(false)}</th>
+          </tr></thead>
           <tbody>${furn.map(f => `
             <tr class="clickabil" data-ruta="stagneaza" data-f="${escapeHtml(f.furnizor)}">
-              <td>${escapeHtml(f.furnizor)}</td><td class="nr">${fmtBani(f.stoc_fara_vz)}</td></tr>`).join('')}
+              <td data-sv="${escapeHtml(f.furnizor)}">${escapeHtml(f.furnizor)}</td>
+              <td class="nr" data-sv="${f.stoc_fara_vz}">${fmtBani(f.stoc_fara_vz)}</td></tr>`).join('')}
           </tbody>
+          <tfoot>
+            <tr class="rand-total">
+              <td><strong>Total (toţi furnizorii)</strong></td>
+              <td class="nr"><strong>${fmtBani(s.stoc_fara_vz_total)}</strong></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>
   `;
+  initSortClient();
   document.getElementById('continut').innerHTML = html;
 
   // click handlers pentru cartele + randuri cu data-ruta
@@ -764,27 +870,43 @@ async function pagLipsuri(filtre) {
   document.getElementById('continut').innerHTML = `
     <h2 class="titlu-pagina">Lipsuri</h2>
 
-    <h3>Sumar pe magazine (pierdere pe săpt. total: ${fmtBani(totalPierdere)})</h3>
+    <h3>Sumar pe magazine</h3>
     <div class="tabel-wrap">
-      <table>
+      <table class="sort-client">
         <thead><tr>
-          <th>Magazin</th>
-          <th class="nr">Lipsă</th><th class="nr">Pe terminate</th><th class="nr">Stoc negativ</th>
-          <th class="nr">Din depozit</th><th class="nr">Din alt magazin</th><th class="nr">De comandat</th>
-          <th class="nr">Pierdere/săpt.</th>
+          <th class="sort-sk" data-sk-type="text">Magazin</th>
+          <th class="nr sort-sk" data-sk-type="nr">Lipsă</th>
+          <th class="nr sort-sk" data-sk-type="nr">Pe terminate</th>
+          <th class="nr sort-sk" data-sk-type="nr">Stoc negativ</th>
+          <th class="nr sort-sk" data-sk-type="nr">Din depozit</th>
+          <th class="nr sort-sk" data-sk-type="nr">Din alt magazin</th>
+          <th class="nr sort-sk" data-sk-type="nr">De comandat</th>
+          <th class="nr sort-sk" data-sk-type="nr">Pierdere/săpt.<br>${etichetaTva(true)}</th>
         </tr></thead>
         <tbody>${ss.sort((a,b) => Number(b.pierdere_total) - Number(a.pierdere_total)).map(r => `
           <tr>
-            <td>${escapeHtml(gestiuneNumeFull(r.cod_depozit))}</td>
-            <td class="nr">${fmtInt(r.nr_lipsa)}</td>
-            <td class="nr">${fmtInt(r.nr_termin)}</td>
-            <td class="nr">${fmtInt(r.nr_negativ)}</td>
-            <td class="nr">${fmtInt(r.nr_din_dep)}</td>
-            <td class="nr">${fmtInt(r.nr_alt_mag)}</td>
-            <td class="nr">${fmtInt(r.nr_comandat)}</td>
-            <td class="nr">${fmtBani(r.pierdere_total)}</td>
+            <td data-sv="${escapeHtml(gestiuneNumeFull(r.cod_depozit))}">${escapeHtml(gestiuneNumeFull(r.cod_depozit))}</td>
+            <td class="nr" data-sv="${Number(r.nr_lipsa||0)}">${fmtInt(r.nr_lipsa)}</td>
+            <td class="nr" data-sv="${Number(r.nr_termin||0)}">${fmtInt(r.nr_termin)}</td>
+            <td class="nr" data-sv="${Number(r.nr_negativ||0)}">${fmtInt(r.nr_negativ)}</td>
+            <td class="nr" data-sv="${Number(r.nr_din_dep||0)}">${fmtInt(r.nr_din_dep)}</td>
+            <td class="nr" data-sv="${Number(r.nr_alt_mag||0)}">${fmtInt(r.nr_alt_mag)}</td>
+            <td class="nr" data-sv="${Number(r.nr_comandat||0)}">${fmtInt(r.nr_comandat)}</td>
+            <td class="nr" data-sv="${Number(r.pierdere_total||0)}">${fmtBani(r.pierdere_total)}</td>
           </tr>`).join('')}
         </tbody>
+        <tfoot>
+          <tr class="rand-total">
+            <td><strong>Total</strong></td>
+            <td class="nr"><strong>${fmtInt(ss.reduce((a,x)=>a+Number(x.nr_lipsa||0),0))}</strong></td>
+            <td class="nr"><strong>${fmtInt(ss.reduce((a,x)=>a+Number(x.nr_termin||0),0))}</strong></td>
+            <td class="nr"><strong>${fmtInt(ss.reduce((a,x)=>a+Number(x.nr_negativ||0),0))}</strong></td>
+            <td class="nr"><strong>${fmtInt(ss.reduce((a,x)=>a+Number(x.nr_din_dep||0),0))}</strong></td>
+            <td class="nr"><strong>${fmtInt(ss.reduce((a,x)=>a+Number(x.nr_alt_mag||0),0))}</strong></td>
+            <td class="nr"><strong>${fmtInt(ss.reduce((a,x)=>a+Number(x.nr_comandat||0),0))}</strong></td>
+            <td class="nr"><strong>${fmtBani(totalPierdere)}</strong></td>
+          </tr>
+        </tfoot>
       </table>
     </div>
 
@@ -793,18 +915,28 @@ async function pagLipsuri(filtre) {
     <div class="tabel-wrap tabel-cu-sticky">
       <table>
         <thead><tr>
-          <th>Magazin</th><th>Cod</th><th class="col-denumire">Denumire</th><th>Furnizor</th>
-          <th class="nr">Stoc</th><th class="nr">Pe drum</th><th class="nr">Ritm/săpt.</th>
-          <th class="nr">Acoperire</th><th>Stare</th><th>Sursă</th>
-          <th class="nr">Pierdere/săpt.</th>
+          ${thSort('cod_depozit', 'Magazin', '', filtre, implicitSort)}
+          ${thSort('cod_art', 'Cod', '', filtre, implicitSort)}
+          ${thSort('cod_bare', 'Cod de bare', 'col-cod-bare', filtre, implicitSort)}
+          ${thSort('nume_art', 'Denumire', 'col-denumire', filtre, implicitSort)}
+          ${thSort('furnizor', 'Furnizor', 'col-furnizor', filtre, implicitSort)}
+          ${thSort('stoc', 'Stoc', 'nr', filtre, implicitSort)}
+          ${thSort('pe_drum', 'Pe drum', 'nr', filtre, implicitSort)}
+          ${thSort('ritm', 'Ritm/săpt.', 'nr', filtre, implicitSort)}
+          ${thSort('acoperire', 'Acoperire', 'nr', filtre, implicitSort)}
+          ${thSort('stare', 'Stare', '', filtre, implicitSort)}
+          ${thSort('sursa', 'Sursă', '', filtre, implicitSort)}
+          ${thSortHtml('pierdere_sapt', 'Pierdere/săpt.<br>' + etichetaTva(true), 'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_lista', capTvaMix('Preţ vz/buc'), 'nr', filtre, implicitSort)}
         </tr></thead>
         <tbody>
         ${randuri.map(r => `
           <tr class="clickabil" data-cod="${escapeHtml(r.cod_art)}">
             <td>${escapeHtml(gestiuneNume(r.cod_depozit))}</td>
             <td><code>${escapeHtml(r.cod_art)}</code></td>
+            <td class="col-cod-bare mic">${escapeHtml(r.cod_bare || '')}</td>
             <td class="col-denumire">${escapeHtml(r.nume_art || '')}</td>
-            <td class="mic">${escapeHtml(r.furnizor || '')}</td>
+            <td class="col-furnizor mic">${escapeHtml(r.furnizor || '')}</td>
             <td class="nr">${fmtNr(r.stoc)}</td>
             <td class="nr">${fmtNr(r.pe_drum)}</td>
             <td class="nr">${fmtNr(r.ritm, 2)}</td>
@@ -812,6 +944,7 @@ async function pagLipsuri(filtre) {
             <td>${stareBadge(r.stare)}</td>
             <td class="mic">${escapeHtml(r.sursa || '')}</td>
             <td class="nr">${Number(r.pierdere_sapt) > 0 ? fmtBani(r.pierdere_sapt) : ''}</td>
+            <td class="nr">${pretVzHtml(r)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -820,28 +953,31 @@ async function pagLipsuri(filtre) {
   `;
   activeazaFisaLink();
   activeazaPaginare();
+  activeazaSortare(filtre, implicitSort);
+  initSortClient();
   document.getElementById('btn-descarca').addEventListener('click', () => {
     descarcaCuBucla('lipsuri', coloaneCsvLipsuri(), constr, total);
   });
 }
 
 function coloaneCsvLipsuri() {
+  // PAS 5 C: ordine comună — gestiune, cod, cod bare, denumire, furnizor, cifre, preţ vz.
   return [
-    { titlu: 'Magazin',   val: r => gestiuneNumeFull(r.cod_depozit) },
-    { titlu: 'Cod',       val: 'cod_art' },
-    { titlu: 'Denumire',  val: 'nume_art' },
-    { titlu: 'Cod bare',  val: 'cod_bare' },
-    { titlu: 'Furnizor',  val: 'furnizor' },
-    { titlu: 'Familie',   val: 'cod_familie' },
-    { titlu: 'Stoc',      val: 'stoc' },
-    { titlu: 'Pe drum',   val: 'pe_drum' },
-    { titlu: 'Ritm',      val: 'ritm' },
-    { titlu: 'Acoperire', val: 'acoperire' },
-    { titlu: 'Stare',     val: r => STARE_DISPLAY[r.stare] || r.stare },
-    { titlu: 'Sursă',     val: 'sursa' },
-    { titlu: 'Pierdere/săpt (fără TVA)', val: 'pierdere_sapt' },
-    { titlu: 'Preţ listă',val: 'pret_lista' },
-    { titlu: 'Preţ achiz.',val: 'pret_achizitie' },
+    { titlu: 'Magazin',    val: r => gestiuneNumeFull(r.cod_depozit) },
+    { titlu: 'Cod',        val: 'cod_art' },
+    { titlu: 'Cod de bare',val: 'cod_bare' },
+    { titlu: 'Denumire',   val: 'nume_art' },
+    { titlu: 'Furnizor',   val: 'furnizor' },
+    { titlu: 'Familie',    val: 'cod_familie' },
+    { titlu: 'Stoc',       val: 'stoc' },
+    { titlu: 'Pe drum',    val: 'pe_drum' },
+    { titlu: 'Ritm',       val: 'ritm' },
+    { titlu: 'Acoperire',  val: 'acoperire' },
+    { titlu: 'Stare',      val: r => STARE_DISPLAY[r.stare] || r.stare },
+    { titlu: 'Sursă',      val: 'sursa' },
+    { titlu: 'Pierdere/săpt (cu TVA)', val: 'pierdere_sapt' },
+    { titlu: 'Preţ achiziţie (fără TVA)', val: 'pret_achizitie' },
+    { titlu: 'Preţ vânzare/buc (cu TVA la magazine, fără TVA la depozite)', val: pretVzVal },
   ];
 }
 
@@ -895,10 +1031,10 @@ async function pagStagneaza(filtre) {
   const ss = (sumar && sumar[0]) || { nr_pozitii: 0, valoare_total: 0 };
 
   const pag = Number(filtre.pag) || 1;
+  const implicitSort = { col: 'valoare_cost', dir: 'desc' };
   const constr = () => {
     let q = stare.client.from('ar_pozitii').select('*', { count: 'exact' })
-      .eq('e_marfa', true).eq(campStagn, true)
-      .order('valoare_cost', { ascending: false });
+      .eq('e_marfa', true).eq(campStagn, true);
     if (filtre.g)   q = q.eq('cod_depozit', filtre.g);
     if (filtre.f)   q = q.eq('furnizor', filtre.f);
     if (filtre.fam) q = q.eq('cod_familie', filtre.fam);
@@ -907,31 +1043,44 @@ async function pagStagneaza(filtre) {
       const t = filtre.q.trim();
       q = q.or(`cod_art.ilike.%${t}%,nume_art.ilike.%${t}%,cod_bare.ilike.%${t}%`);
     }
-    return q;
+    return aplicaSortare(q, filtre, implicitSort);
   };
   const { randuri, total, from, to } = await fetchPagina(constr, pag);
 
   document.getElementById('continut').innerHTML = `
     <h2 class="titlu-pagina">Marfă care stagnează</h2>
     <p class="mic" style="color:var(--text-dim);margin:0 0 10px;">
-      Pentru selecţia curentă: <strong>${fmtInt(ss.nr_pozitii)}</strong> poziţii — <strong>${fmtBani(ss.valoare_total)}</strong> la cost
+      Pentru selecţia curentă: <strong>${fmtInt(ss.nr_pozitii)}</strong> poziţii — <strong>${fmtBani(ss.valoare_total)}</strong> la cost ${etichetaTva(false)}
     </p>
     ${renderPaginareHTML(from, to, total, pag)}
-    <div class="tabel-wrap tabel-cu-sticky">
+    <div class="tabel-wrap tabel-cu-sticky tabel-compact">
       <table>
         <thead><tr>
-          <th>Gestiune</th><th>Cod</th><th class="col-denumire">Denumire</th><th>Furnizor</th><th>Familie</th>
-          <th class="nr">Stoc</th><th class="nr">Valoare cost</th><th>Ultima vz. gestiune</th><th>Ultima vz. firmă</th>
+          ${thSort('cod_depozit', 'Gestiune', '', filtre, implicitSort)}
+          ${thSort('cod_art', 'Cod', '', filtre, implicitSort)}
+          ${thSort('cod_bare', 'Cod de bare', 'col-cod-bare', filtre, implicitSort)}
+          ${thSort('nume_art', 'Denumire', 'col-denumire', filtre, implicitSort)}
+          ${thSort('furnizor', 'Furnizor', 'col-furnizor', filtre, implicitSort)}
+          ${thSort('cod_familie', 'Familie', '', filtre, implicitSort)}
+          ${thSort('stoc', 'Stoc', 'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_achizitie', 'Preţ achiziţie<br>' + etichetaTva(false), 'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_lista', capTvaMix('Preţ vânzare'), 'nr', filtre, implicitSort)}
+          ${thSortHtml('valoare_cost', 'Val. cost<br>' + etichetaTva(false), 'nr', filtre, implicitSort)}
+          ${thSort('ultima_vz_gestiune', 'Ultima vz. gest.', '', filtre, implicitSort)}
+          ${thSort('ultima_vz_firma', 'Ultima vz. firmă', '', filtre, implicitSort)}
         </tr></thead>
         <tbody>
         ${randuri.map(r => `
           <tr class="clickabil" data-cod="${escapeHtml(r.cod_art)}">
             <td>${escapeHtml(gestiuneNume(r.cod_depozit))}</td>
             <td><code>${escapeHtml(r.cod_art)}</code></td>
+            <td class="col-cod-bare mic">${escapeHtml(r.cod_bare || '')}</td>
             <td class="col-denumire">${escapeHtml(r.nume_art || '')}</td>
-            <td class="mic">${escapeHtml(r.furnizor || '')}</td>
+            <td class="col-furnizor mic">${escapeHtml(r.furnizor || '')}</td>
             <td class="mic">${escapeHtml(r.cod_familie || '')}</td>
             <td class="nr">${fmtNr(r.stoc)}</td>
+            <td class="nr">${r.pret_achizitie ? fmtBani(r.pret_achizitie) : ''}</td>
+            <td class="nr">${pretVzHtml(r)}</td>
             <td class="nr">${fmtBani(r.valoare_cost)}</td>
             <td class="mic">${fmtData(r.ultima_vz_gestiune)}</td>
             <td class="mic">${fmtData(r.ultima_vz_firma)}</td>
@@ -943,18 +1092,21 @@ async function pagStagneaza(filtre) {
   `;
   activeazaFisaLink();
   activeazaPaginare();
+  activeazaSortare(filtre, implicitSort);
   document.getElementById('btn-descarca').addEventListener('click', () => {
     descarcaCuBucla('stagneaza', [
-      { titlu: 'Gestiune', val: r => gestiuneNumeFull(r.cod_depozit) },
-      { titlu: 'Cod',      val: 'cod_art' },
-      { titlu: 'Denumire', val: 'nume_art' },
-      { titlu: 'Cod bare', val: 'cod_bare' },
-      { titlu: 'Furnizor', val: 'furnizor' },
-      { titlu: 'Familie',  val: 'cod_familie' },
-      { titlu: 'Stoc',     val: 'stoc' },
-      { titlu: 'Valoare cost', val: 'valoare_cost' },
-      { titlu: 'Ultima vânz. gestiune', val: r => fmtData(r.ultima_vz_gestiune) },
-      { titlu: 'Ultima vânz. firmă',    val: r => fmtData(r.ultima_vz_firma) },
+      { titlu: 'Gestiune',   val: r => gestiuneNumeFull(r.cod_depozit) },
+      { titlu: 'Cod',        val: 'cod_art' },
+      { titlu: 'Cod de bare',val: 'cod_bare' },
+      { titlu: 'Denumire',   val: 'nume_art' },
+      { titlu: 'Furnizor',   val: 'furnizor' },
+      { titlu: 'Familie',    val: 'cod_familie' },
+      { titlu: 'Stoc',       val: 'stoc' },
+      { titlu: 'Preţ achiziţie/buc (fără TVA)', val: 'pret_achizitie' },
+      { titlu: 'Preţ vânzare/buc (cu TVA la magazine, fără TVA la depozite)', val: pretVzVal },
+      { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
+      { titlu: 'Ultima vânz. gestiune',   val: r => fmtData(r.ultima_vz_gestiune) },
+      { titlu: 'Ultima vânz. firmă',      val: r => fmtData(r.ultima_vz_firma) },
     ], constr, total);
   });
 }
@@ -967,7 +1119,8 @@ async function pagStocuriNegative(filtre) {
   construiesteFiltreHTML(filtre, { gestiune: 'all', descarca: true }, {});
 
   const pag = Number(filtre.pag) || 1;
-  const constr = () => queryPozitii(filtre, 'negative').order('valoare_cost', { ascending: true });
+  const implicitSort = { col: 'valoare_cost', dir: 'asc' };
+  const constr = () => aplicaSortare(queryPozitii(filtre, 'negative'), filtre, implicitSort);
   const { randuri, total, from, to } = await fetchPagina(constr, pag);
 
   // sumar pe gestiuni: bucla pe toate pozitiile negative (pot fi 1000+)
@@ -982,38 +1135,68 @@ async function pagStocuriNegative(filtre) {
   }
   const sumarList = Object.values(sumar).sort((a,b) => a.valoare - b.valoare);
 
+  const totalPoz = sumarList.reduce((a,s)=>a+s.poz, 0);
+  const totalBuc = sumarList.reduce((a,s)=>a+s.buc, 0);
+  const totalVal = sumarList.reduce((a,s)=>a+s.valoare, 0);
+
   document.getElementById('continut').innerHTML = `
     <h2 class="titlu-pagina">Stocuri negative</h2>
 
     <h3>Pe gestiuni</h3>
     <div class="tabel-wrap">
-      <table>
-        <thead><tr><th>Gestiune</th><th class="nr">Poziţii</th><th class="nr">Bucăţi</th><th class="nr">Valoare la cost</th></tr></thead>
+      <table class="sort-client">
+        <thead><tr>
+          <th class="sort-sk" data-sk-type="text">Gestiune</th>
+          <th class="nr sort-sk" data-sk-type="nr">Nr. produse</th>
+          <th class="nr sort-sk" data-sk-type="nr">Bucăţi</th>
+          <th class="nr sort-sk" data-sk-type="nr">Valoare la cost<br>${etichetaTva(false)}</th>
+        </tr></thead>
         <tbody>${sumarList.map(s => `
-          <tr><td>${escapeHtml(s.nume)}</td><td class="nr">${fmtInt(s.poz)}</td>
-              <td class="nr">${fmtNr(s.buc, 2)}</td><td class="nr">${fmtBani(s.valoare)}</td></tr>`).join('')}
+          <tr>
+            <td data-sv="${escapeHtml(s.nume)}">${escapeHtml(s.nume)}</td>
+            <td class="nr" data-sv="${s.poz}">${fmtInt(s.poz)}</td>
+            <td class="nr" data-sv="${s.buc}">${fmtNr(s.buc, 2)}</td>
+            <td class="nr" data-sv="${s.valoare}">${fmtBani(s.valoare)}</td>
+          </tr>`).join('')}
         </tbody>
+        <tfoot>
+          <tr class="rand-total">
+            <td><strong>Total</strong></td>
+            <td class="nr"><strong>${fmtInt(totalPoz)}</strong></td>
+            <td class="nr"><strong>${fmtNr(totalBuc, 2)}</strong></td>
+            <td class="nr"><strong>${fmtBani(totalVal)}</strong></td>
+          </tr>
+        </tfoot>
       </table>
     </div>
 
     <h3>Lista produselor</h3>
     ${renderPaginareHTML(from, to, total, pag)}
-    <div class="tabel-wrap">
+    <div class="tabel-wrap tabel-cu-sticky">
       <table>
         <thead><tr>
-          <th>Gestiune</th><th>Cod</th><th>Denumire</th><th>Furnizor</th>
-          <th class="nr">Stoc</th><th class="nr">Valoare cost</th><th class="nr">Ritm/săpt.</th>
+          ${thSort('cod_depozit', 'Gestiune', '', filtre, implicitSort)}
+          ${thSort('cod_art', 'Cod', '', filtre, implicitSort)}
+          ${thSort('cod_bare', 'Cod de bare', 'col-cod-bare', filtre, implicitSort)}
+          ${thSort('nume_art', 'Denumire', 'col-denumire', filtre, implicitSort)}
+          ${thSort('furnizor', 'Furnizor', 'col-furnizor', filtre, implicitSort)}
+          ${thSort('stoc', 'Stoc', 'nr', filtre, implicitSort)}
+          ${thSortHtml('valoare_cost', 'Valoare cost<br>' + etichetaTva(false), 'nr', filtre, implicitSort)}
+          ${thSort('ritm', 'Ritm/săpt.', 'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_lista', capTvaMix('Preţ vz/buc'), 'nr', filtre, implicitSort)}
         </tr></thead>
         <tbody>
         ${randuri.map(r => `
           <tr class="clickabil" data-cod="${escapeHtml(r.cod_art)}">
             <td>${escapeHtml(gestiuneNume(r.cod_depozit))}</td>
             <td><code>${escapeHtml(r.cod_art)}</code></td>
-            <td>${escapeHtml(r.nume_art || '')}</td>
-            <td class="mic">${escapeHtml(r.furnizor || '')}</td>
+            <td class="col-cod-bare mic">${escapeHtml(r.cod_bare || '')}</td>
+            <td class="col-denumire">${escapeHtml(r.nume_art || '')}</td>
+            <td class="col-furnizor mic">${escapeHtml(r.furnizor || '')}</td>
             <td class="nr">${fmtNr(r.stoc, 2)}</td>
             <td class="nr">${fmtBani(r.valoare_cost)}</td>
             <td class="nr">${fmtNr(r.ritm, 2)}</td>
+            <td class="nr">${pretVzHtml(r)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -1022,15 +1205,19 @@ async function pagStocuriNegative(filtre) {
   `;
   activeazaFisaLink();
   activeazaPaginare();
+  activeazaSortare(filtre, implicitSort);
+  initSortClient();
   document.getElementById('btn-descarca').addEventListener('click', () => {
     descarcaCuBucla('stocuri-negative', [
-      { titlu: 'Gestiune', val: r => gestiuneNumeFull(r.cod_depozit) },
-      { titlu: 'Cod',      val: 'cod_art' },
-      { titlu: 'Denumire', val: 'nume_art' },
-      { titlu: 'Furnizor', val: 'furnizor' },
-      { titlu: 'Stoc',     val: 'stoc' },
-      { titlu: 'Valoare cost', val: 'valoare_cost' },
-      { titlu: 'Ritm',     val: 'ritm' },
+      { titlu: 'Gestiune',   val: r => gestiuneNumeFull(r.cod_depozit) },
+      { titlu: 'Cod',        val: 'cod_art' },
+      { titlu: 'Cod de bare',val: 'cod_bare' },
+      { titlu: 'Denumire',   val: 'nume_art' },
+      { titlu: 'Furnizor',   val: 'furnizor' },
+      { titlu: 'Stoc',       val: 'stoc' },
+      { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
+      { titlu: 'Ritm',       val: 'ritm' },
+      { titlu: 'Preţ vânzare/buc (cu TVA la magazine, fără TVA la depozite)', val: pretVzVal },
     ], constr, total);
   });
 }
@@ -1061,29 +1248,44 @@ async function pagRetururi(filtre) {
   const prag = new Date(d); prag.setDate(prag.getDate() - zile + 1);
   const pragStr = prag.toISOString().slice(0, 10);
 
+  const implicitSort = { col: 'valoare_cost', dir: 'desc' };
   const constr = () => {
     let q = stare.client.from('ar_retururi').select('*', { count: 'exact' })
-      .gte('prima_zi', pragStr)
-      .order('valoare_cost', { ascending: false });
+      .gte('prima_zi', pragStr);
     if (filtre.g) q = q.eq('cod_depozit', filtre.g);
     if (filtre.f) q = q.eq('furnizor', filtre.f);
-    return q;
+    return aplicaSortare(q, filtre, implicitSort);
   };
   const { randuri, total, from, to } = await fetchPagina(constr, pag);
 
   document.getElementById('continut').innerHTML = `
     <h2 class="titlu-pagina">Retururi spre depozit</h2>
 
-    <h3>Sumar pe magazine — 8 săptămâni (total ${fmtBani(totalRetur)})</h3>
+    <h3>Sumar pe magazine — 8 săptămâni</h3>
     <div class="tabel-wrap">
-      <table>
-        <thead><tr><th>Magazin</th><th class="nr">Valoare retur</th><th class="nr">Marfă primită</th><th class="nr">% din primită</th></tr></thead>
+      <table class="sort-client">
+        <thead><tr>
+          <th class="sort-sk" data-sk-type="text">Magazin</th>
+          <th class="nr sort-sk" data-sk-type="nr">Valoare retur<br>${etichetaTva(false)}</th>
+          <th class="nr sort-sk" data-sk-type="nr">Marfă primită<br>${etichetaTva(false)}</th>
+          <th class="nr sort-sk" data-sk-type="nr">% din primită</th>
+        </tr></thead>
         <tbody>${sumarSorted.map(r => `
-          <tr><td>${escapeHtml(gestiuneNumeFull(r.cod_depozit))}</td>
-              <td class="nr">${fmtBani(r.retur)}</td>
-              <td class="nr">${fmtBani(r.primita)}</td>
-              <td class="nr">${r.procent != null ? fmtProc(r.procent) : ''}</td></tr>`).join('')}
+          <tr>
+            <td data-sv="${escapeHtml(gestiuneNumeFull(r.cod_depozit))}">${escapeHtml(gestiuneNumeFull(r.cod_depozit))}</td>
+            <td class="nr" data-sv="${Number(r.retur||0)}">${fmtBani(r.retur)}</td>
+            <td class="nr" data-sv="${Number(r.primita||0)}">${fmtBani(r.primita)}</td>
+            <td class="nr" data-sv="${Number(r.procent||0)}">${r.procent != null ? fmtProc(r.procent) : ''}</td>
+          </tr>`).join('')}
         </tbody>
+        <tfoot>
+          <tr class="rand-total">
+            <td><strong>Total</strong></td>
+            <td class="nr"><strong>${fmtBani(totalRetur)}</strong></td>
+            <td class="nr"><strong>${fmtBani(sumarSorted.reduce((a,x)=>a+Number(x.primita||0),0))}</strong></td>
+            <td class="nr"></td>
+          </tr>
+        </tfoot>
       </table>
     </div>
 
@@ -1092,8 +1294,14 @@ async function pagRetururi(filtre) {
     <div class="tabel-wrap">
       <table>
         <thead><tr>
-          <th>Săpt.</th><th>Magazin</th><th>Cod</th><th>Denumire</th><th>Furnizor</th>
-          <th class="nr">Cantitate</th><th class="nr">Valoare cost</th>
+          ${thSort('prima_zi', 'Săpt.', '', filtre, implicitSort)}
+          ${thSort('cod_depozit', 'Magazin', '', filtre, implicitSort)}
+          ${thSort('cod_art', 'Cod', '', filtre, implicitSort)}
+          ${thSort('cod_bare', 'Cod de bare', 'col-cod-bare', filtre, implicitSort)}
+          ${thSort('nume_art', 'Denumire', 'col-denumire', filtre, implicitSort)}
+          ${thSort('furnizor', 'Furnizor', 'col-furnizor', filtre, implicitSort)}
+          ${thSort('cantitate', 'Cantitate', 'nr', filtre, implicitSort)}
+          ${thSortHtml('valoare_cost', 'Valoare cost<br>' + etichetaTva(false), 'nr', filtre, implicitSort)}
         </tr></thead>
         <tbody>
         ${randuri.map(r => `
@@ -1101,8 +1309,9 @@ async function pagRetururi(filtre) {
             <td class="mic">${fmtData(r.prima_zi)}</td>
             <td>${escapeHtml(gestiuneNume(r.cod_depozit))}</td>
             <td><code>${escapeHtml(r.cod_art)}</code></td>
-            <td>${escapeHtml(r.nume_art || '')}</td>
-            <td class="mic">${escapeHtml(r.furnizor || '')}</td>
+            <td class="col-cod-bare mic">${escapeHtml(r.cod_bare || '')}</td>
+            <td class="col-denumire">${escapeHtml(r.nume_art || '')}</td>
+            <td class="col-furnizor mic">${escapeHtml(r.furnizor || '')}</td>
             <td class="nr">${fmtNr(r.cantitate, 2)}</td>
             <td class="nr">${fmtBani(r.valoare_cost)}</td>
           </tr>`).join('')}
@@ -1113,15 +1322,18 @@ async function pagRetururi(filtre) {
   `;
   activeazaFisaLink();
   activeazaPaginare();
+  activeazaSortare(filtre, implicitSort);
+  initSortClient();
   document.getElementById('btn-descarca').addEventListener('click', () => {
     descarcaCuBucla('retururi', [
       { titlu: 'Săptămâna (prima zi)', val: r => fmtData(r.prima_zi) },
-      { titlu: 'Magazin', val: r => gestiuneNumeFull(r.cod_depozit) },
-      { titlu: 'Cod',     val: 'cod_art' },
-      { titlu: 'Denumire',val: 'nume_art' },
-      { titlu: 'Furnizor',val: 'furnizor' },
-      { titlu: 'Cantitate', val: 'cantitate' },
-      { titlu: 'Valoare cost', val: 'valoare_cost' },
+      { titlu: 'Magazin',    val: r => gestiuneNumeFull(r.cod_depozit) },
+      { titlu: 'Cod',        val: 'cod_art' },
+      { titlu: 'Cod de bare',val: 'cod_bare' },
+      { titlu: 'Denumire',   val: 'nume_art' },
+      { titlu: 'Furnizor',   val: 'furnizor' },
+      { titlu: 'Cantitate',  val: 'cantitate' },
+      { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
     ], constr, total);
   });
 }
@@ -1211,10 +1423,10 @@ function aplicaFiltreStocProd(q, filtre) {
     case 'fara-bar':       q = q.or('cod_bare.is.null,cod_bare.eq.'); break;
     case 'fara-fam':       q = q.or('cod_familie.is.null,cod_familie.eq.'); break;
   }
-  // Selector stoc pe totalul produsului
+  // PAS 5 E: Selector stoc pe produs — „in stoc" = stoc pozitiv in CEL PUTIN o gestiune sau marfa pe drum.
   const st = filtre.st || 'in';
-  if      (st === 'in')   q = q.or('stoc_total.gt.0,pe_drum.gt.0');
-  else if (st === 'fara') q = q.eq('stoc_total', 0).eq('pe_drum', 0);
+  if      (st === 'in')   q = q.or('are_stoc_poz.eq.true,pe_drum.gt.0');
+  else if (st === 'fara') q = q.eq('are_stoc_poz', false).eq('pe_drum', 0);
   // 'toate' → fara conditie
   return q;
 }
@@ -1276,7 +1488,9 @@ function renderTotalSelectieHTML(t, modProd) {
   const nrProd = Number(t.nr_produse || 0);
   const buc    = Number(t.bucati || 0);
   const vc     = Number(t.valoare_cost || 0);
-  const vp     = Number(t.valoare_pret || 0);
+  // PAS 5 A: două valori la preţ vz — magazine CU TVA + depozite FĂRĂ TVA.
+  const vpMag  = Number(t.valoare_pret_mag_cu_tva   || 0);
+  const vpDep  = Number(t.valoare_pret_dep_fara_tva || 0);
   const etLinie = modProd
     ? `<strong>${fmtInt(nrProd)}</strong> produse`
     : `<strong>${fmtInt(nrPoz)}</strong> poziţii &nbsp;·&nbsp; <strong>${fmtInt(nrProd)}</strong> produse diferite`;
@@ -1284,9 +1498,11 @@ function renderTotalSelectieHTML(t, modProd) {
     <div class="cartele" style="grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); margin-bottom: 12px;">
       <div class="cartela"><div class="eticheta">Selecţie</div><div class="valoare" style="font-size:16px;">${etLinie}</div></div>
       <div class="cartela"><div class="eticheta">Bucăţi</div><div class="valoare">${fmtNr(buc, 2)}</div></div>
-      <div class="cartela"><div class="eticheta">Valoare la cost</div><div class="valoare">${fmtBani(vc)}</div></div>
-      <div class="cartela"><div class="eticheta">Valoare la preţ vz (cu TVA)</div><div class="valoare">${fmtBani(vp)}</div></div>
-    </div>`;
+      <div class="cartela"><div class="eticheta">Valoare la cost</div><div class="valoare">${fmtBani(vc)} ${etichetaTva(false)}</div></div>
+      <div class="cartela"><div class="eticheta">Preţ vz – magazine</div><div class="valoare">${fmtBani(vpMag)} ${etichetaTva(true)}</div></div>
+      <div class="cartela"><div class="eticheta">Preţ vz – depozite</div><div class="valoare">${fmtBani(vpDep)} ${etichetaTva(false)}</div></div>
+    </div>
+    ${!modProd ? '<p class="mic" style="color:var(--text-dim);margin:4px 0 12px;">O poziţie = un produs într-o gestiune.</p>' : ''}`;
 }
 
 // ============================================================================
@@ -1314,15 +1530,15 @@ async function pagStocPeGestiuni(filtre, totalPromise) {
         <thead><tr>
           ${thSort('cod_depozit', 'Gestiune', '', filtre, implicitSort)}
           ${thSort('cod_art', 'Cod', '', filtre, implicitSort)}
-          ${thSort('cod_bare', 'Cod de bare', 'col-cod-bare', filtre, implicitSort)}
+          ${thSortHtml('cod_bare', escapeHtml('Cod de bare'), 'col-cod-bare', filtre, implicitSort)}
           ${thSort('nume_art', 'Denumire', 'col-denumire', filtre, implicitSort)}
-          ${thSort('furnizor', 'Furnizor', '', filtre, implicitSort)}
+          ${thSort('furnizor', 'Furnizor', 'col-furnizor', filtre, implicitSort)}
           ${thSort('cod_familie', 'Familie', '', filtre, implicitSort)}
           ${thSort('stoc', 'Stoc', 'nr', filtre, implicitSort)}
           ${thSort('pe_drum', 'Pe drum', 'nr', filtre, implicitSort)}
-          ${thSort('valoare_cost', 'Val. cost', 'nr', filtre, implicitSort)}
-          ${thSort('pret_achizitie', 'Preţ achiziţie', 'nr', filtre, implicitSort)}
-          ${thSort('pret_lista', 'Preţ vânzare', 'nr', filtre, implicitSort)}
+          ${thSortHtml('valoare_cost', capTva('Val. cost', false), 'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_achizitie', capTva('Preţ achiziţie', false), 'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_lista', capTvaMix('Preţ vânzare'), 'nr', filtre, implicitSort)}
           ${thSort('adaos', 'Adaos', 'nr', filtre, implicitSort)}
           ${thSort('stare', 'Stare', '', filtre, implicitSort)}
         </tr></thead>
@@ -1336,13 +1552,13 @@ async function pagStocPeGestiuni(filtre, totalPromise) {
             <td><code>${escapeHtml(r.cod_art)}</code></td>
             <td class="col-cod-bare mic">${escapeHtml(r.cod_bare || '')}</td>
             <td class="col-denumire">${escapeHtml(r.nume_art || '')}</td>
-            <td class="mic">${escapeHtml(r.furnizor || '')}</td>
+            <td class="col-furnizor mic">${escapeHtml(r.furnizor || '')}</td>
             <td class="mic">${escapeHtml(r.cod_familie || '')}</td>
             <td class="nr ${Number(r.stoc) < 0 ? 'neg' : ''}">${fmtNr(r.stoc, 2)}</td>
             <td class="nr">${fmtNr(r.pe_drum, 2)}</td>
             <td class="nr">${fmtBani(r.valoare_cost)}</td>
             <td class="nr"${tooltip}>${r.pret_achizitie ? fmtBani(r.pret_achizitie) : ''}</td>
-            <td class="nr">${r.pret_lista ? fmtBani(r.pret_lista) : ''}</td>
+            <td class="nr">${pretVzHtml(r)}</td>
             <td class="nr">${r.adaos != null ? fmtProc(r.adaos) : ''}</td>
             <td>${stareBadge(r.stare)}</td>
           </tr>`;
@@ -1350,6 +1566,7 @@ async function pagStocPeGestiuni(filtre, totalPromise) {
         </tbody>
       </table>
     </div>
+    <p class="mic" style="color:var(--text-dim);margin-top:6px;">Adaosul este calculat pe valori fără TVA.</p>
     ${renderPaginareHTML(from, to, total, pag)}
   `;
   activeazaFisaLink();
@@ -1423,13 +1640,14 @@ async function pagStocPeProdus(filtre, totalPromise) {
           ${thSort('nume_art',      'Denumire',        'col-denumire', filtre, implicitSort)}
           ${thSort('cod_familie',   'Familie',         'col-opt', filtre, implicitSort)}
           ${thSort('furnizor',      'Furnizor',        'col-opt', filtre, implicitSort)}
-          ${thSort('pret_achizitie','Preţ achiziţie',  'nr col-opt', filtre, implicitSort)}
-          ${thSort('pret_lista',    'Preţ vânzare',    'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_achizitie',       capTva('Preţ achiziţie', false),      'nr col-opt', filtre, implicitSort)}
+          ${thSortHtml('pret_lista',           capTva('Preţ vz magazin', true),      'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_lista_fara_tva',  capTva('Preţ vz depozit', false),     'nr', filtre, implicitSort)}
           ${thSort('adaos',         'Adaos',           'nr col-opt', filtre, implicitSort)}
           ${GEST_PE_PRODUS.map(g => thSort(g.col, g.nume, 'nr col-opt', filtre, implicitSort)).join('')}
           ${thSort('pe_drum',       'Pe drum',         'nr col-opt', filtre, implicitSort)}
           ${thSort('stoc_total',    'Total stoc',      'nr', filtre, implicitSort)}
-          ${thSort('valoare_cost',  'Valoare cost',    'nr col-opt', filtre, implicitSort)}
+          ${thSortHtml('valoare_cost',  capTva('Valoare cost', false),  'nr col-opt', filtre, implicitSort)}
         </tr></thead>
         <tbody>
         ${randuri.map(r => {
@@ -1444,6 +1662,7 @@ async function pagStocPeProdus(filtre, totalPromise) {
             <td class="col-opt mic">${escapeHtml(r.furnizor || '')}</td>
             <td class="nr col-opt"${tooltip}>${r.pret_achizitie ? fmtBani(r.pret_achizitie) : ''}</td>
             <td class="nr">${r.pret_lista ? fmtBani(r.pret_lista) : ''}</td>
+            <td class="nr">${r.pret_lista_fara_tva ? fmtBani(r.pret_lista_fara_tva) : ''}</td>
             <td class="nr col-opt">${r.adaos != null ? fmtProc(r.adaos) : ''}</td>
             ${GEST_PE_PRODUS.map(g => celStoc(r[g.col], 'col-opt')).join('')}
             <td class="nr col-opt">${Number(r.pe_drum || 0) === 0 ? '' : fmtNr(r.pe_drum, 2)}</td>
@@ -1454,6 +1673,7 @@ async function pagStocPeProdus(filtre, totalPromise) {
         </tbody>
       </table>
     </div>
+    <p class="mic" style="color:var(--text-dim);margin-top:6px;">Adaosul este calculat pe valori fără TVA. Preţul de raft la depozite este fără TVA (nu avem listă de preţuri en gros).</p>
     ${renderPaginareHTML(from, to, total, pag)}
   `;
   activeazaFisaLink();
@@ -1466,16 +1686,18 @@ async function pagStocPeProdus(filtre, totalPromise) {
       { titlu: 'Denumire',     val: 'nume_art' },
       { titlu: 'Familie',      val: 'cod_familie' },
       { titlu: 'Furnizor',     val: 'furnizor' },
-      { titlu: 'Preţ achiziţie', val: 'pret_achizitie' },
+      { titlu: 'Preţ achiziţie (fără TVA)', val: 'pret_achizitie' },
       { titlu: 'Furnizor factură', val: 'factura_furnizor' },
       { titlu: 'Data factură', val: r => fmtData(r.factura_data) },
-      { titlu: 'Preţ vânzare', val: 'pret_lista' },
+      { titlu: 'Preţ vz magazin (cu TVA)',  val: 'pret_lista' },
+      { titlu: 'Preţ vz depozit (fără TVA)', val: 'pret_lista_fara_tva' },
       { titlu: 'Adaos',        val: 'adaos' },
       ...GEST_PE_PRODUS.map(g => ({ titlu: g.nume, val: g.col })),
       { titlu: 'Pe drum',      val: 'pe_drum' },
       { titlu: 'Total stoc',   val: 'stoc_total' },
-      { titlu: 'Valoare cost', val: 'valoare_cost' },
-      { titlu: 'Valoare preţ', val: 'valoare_pret' },
+      { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
+      { titlu: 'Valoare preţ – magazine (cu TVA)',  val: 'valoare_pret_mag_cu_tva' },
+      { titlu: 'Valoare preţ – depozite (fără TVA)', val: 'valoare_pret_dep_fara_tva' },
     ], constr, total);
   });
 }
@@ -1514,23 +1736,29 @@ async function pagFisa(cod) {
       <div class="meta" style="margin-top:8px;">
         Stoc total: <strong>${fmtNr(stocTotal, 2)}</strong> &nbsp;·&nbsp;
         Pe drum: <strong>${fmtNr(peDrumTotal, 2)}</strong> &nbsp;·&nbsp;
-        Cost mediu: ${p0.cost_mediu ? fmtBani(p0.cost_mediu) : '—'} &nbsp;·&nbsp;
-        Preţ listă: ${p0.pret_lista ? fmtBani(p0.pret_lista) : '—'} &nbsp;·&nbsp;
-        Preţ achiziţie: ${p0.pret_achizitie ? fmtBani(p0.pret_achizitie) : '—'}
+        Cost mediu: ${p0.cost_mediu ? fmtBani(p0.cost_mediu) : '—'} ${etichetaTva(false)} &nbsp;·&nbsp;
+        Preţ vz magazin: ${p0.pret_lista ? fmtBani(p0.pret_lista) : '—'} ${etichetaTva(true)} &nbsp;·&nbsp;
+        Preţ vz depozit: ${p0.pret_lista_fara_tva ? fmtBani(p0.pret_lista_fara_tva) : '—'} ${etichetaTva(false)} &nbsp;·&nbsp;
+        Preţ achiziţie: ${p0.pret_achizitie ? fmtBani(p0.pret_achizitie) : '—'} ${etichetaTva(false)}
         ${p0.factura_furnizor ? ' (de la ' + escapeHtml(p0.factura_furnizor) + ', ' + fmtData(p0.factura_data) + ')' : ''}
-        &nbsp;·&nbsp; Adaos: ${p0.adaos != null ? fmtProc(p0.adaos) : '—'}
+        &nbsp;·&nbsp; Adaos: ${p0.adaos != null ? fmtProc(p0.adaos) : '—'} <small class="eticheta-tva">pe valori fără TVA</small>
       </div>
     </div>
 
     <h3>Stoc pe gestiune</h3>
     <div class="tabel-wrap">
-      <table>
+      <table class="sort-client">
         <thead><tr>
-          <th>Gestiune</th><th class="nr">Stoc</th><th class="nr">Pe drum</th>
-          <th class="nr">Val. cost</th>
-          <th class="nr">Vânzări 8 săpt. (bon)</th><th class="nr">Săpt. active</th>
-          <th class="nr">Acoperire</th><th>Stare</th><th>Sursă</th>
-          <th class="mic">Ultima vânzare</th>
+          <th class="sort-sk" data-sk-type="text">Gestiune</th>
+          <th class="nr sort-sk" data-sk-type="nr">Stoc</th>
+          <th class="nr sort-sk" data-sk-type="nr">Pe drum</th>
+          <th class="nr sort-sk" data-sk-type="nr">Val. cost<br>${etichetaTva(false)}</th>
+          <th class="nr sort-sk" data-sk-type="nr">Vânzări 8 săpt. (bon)</th>
+          <th class="nr sort-sk" data-sk-type="nr">Săpt. active</th>
+          <th class="nr sort-sk" data-sk-type="nr">Acoperire</th>
+          <th class="sort-sk" data-sk-type="text">Stare</th>
+          <th class="sort-sk" data-sk-type="text">Sursă</th>
+          <th class="mic sort-sk" data-sk-type="text">Ultima vânzare</th>
         </tr></thead>
         <tbody>${pozitii
           .sort((a,b) => GESTIUNI.findIndex(g => g.cod === a.cod_depozit) - GESTIUNI.findIndex(g => g.cod === b.cod_depozit))
@@ -1539,16 +1767,16 @@ async function pagFisa(cod) {
                       +Number(p.v_s5||0)+Number(p.v_s6||0)+Number(p.v_s7||0)+Number(p.v_s8||0);
             return `
             <tr>
-              <td>${escapeHtml(gestiuneNumeFull(p.cod_depozit))}</td>
-              <td class="nr">${fmtNr(p.stoc, 2)}</td>
-              <td class="nr">${fmtNr(p.pe_drum, 2)}</td>
-              <td class="nr">${fmtBani(p.valoare_cost)}</td>
-              <td class="nr">${fmtNr(bon, 2)}</td>
-              <td class="nr">${fmtInt(p.nr_sapt_vz)}</td>
-              <td class="nr">${p.acoperire != null ? fmtNr(p.acoperire, 1) : ''}</td>
-              <td>${stareBadge(p.stare)}</td>
-              <td class="mic">${escapeHtml(p.sursa || '')}</td>
-              <td class="mic">${fmtData(p.ultima_vz_gestiune)}</td>
+              <td data-sv="${escapeHtml(gestiuneNumeFull(p.cod_depozit))}">${escapeHtml(gestiuneNumeFull(p.cod_depozit))}</td>
+              <td class="nr" data-sv="${Number(p.stoc||0)}">${fmtNr(p.stoc, 2)}</td>
+              <td class="nr" data-sv="${Number(p.pe_drum||0)}">${fmtNr(p.pe_drum, 2)}</td>
+              <td class="nr" data-sv="${Number(p.valoare_cost||0)}">${fmtBani(p.valoare_cost)}</td>
+              <td class="nr" data-sv="${bon}">${fmtNr(bon, 2)}</td>
+              <td class="nr" data-sv="${Number(p.nr_sapt_vz||0)}">${fmtInt(p.nr_sapt_vz)}</td>
+              <td class="nr" data-sv="${p.acoperire != null ? Number(p.acoperire) : 999999}">${p.acoperire != null ? fmtNr(p.acoperire, 1) : ''}</td>
+              <td data-sv="${escapeHtml(p.stare || '')}">${stareBadge(p.stare)}</td>
+              <td class="mic" data-sv="${escapeHtml(p.sursa || '')}">${escapeHtml(p.sursa || '')}</td>
+              <td class="mic" data-sv="${p.ultima_vz_gestiune || ''}">${fmtData(p.ultima_vz_gestiune)}</td>
             </tr>`;
         }).join('')}
         </tbody>
@@ -1557,24 +1785,29 @@ async function pagFisa(cod) {
 
     <h3>Vânzări pe săptămână (toate gestiunile, ultimele 20)</h3>
     <div class="tabel-wrap">
-      <table>
+      <table class="sort-client">
         <thead><tr>
-          <th>Săpt.</th><th>Gestiune</th>
-          <th class="nr">Bon</th><th class="nr">Factură</th><th class="nr">Aviz</th><th class="nr">Val. cost</th>
+          <th class="sort-sk" data-sk-type="text">Săpt.</th>
+          <th class="sort-sk" data-sk-type="text">Gestiune</th>
+          <th class="nr sort-sk" data-sk-type="nr">Bon</th>
+          <th class="nr sort-sk" data-sk-type="nr">Factură</th>
+          <th class="nr sort-sk" data-sk-type="nr">Aviz</th>
+          <th class="nr sort-sk" data-sk-type="nr">Val. cost<br>${etichetaTva(false)}</th>
         </tr></thead>
         <tbody>${(istoric || []).map(v => `
           <tr>
-            <td class="mic">${fmtData(v.prima_zi)}</td>
-            <td>${escapeHtml(gestiuneNume(v.cod_depozit))}</td>
-            <td class="nr">${fmtNr(v.cant_bon, 2)}</td>
-            <td class="nr">${fmtNr(v.cant_factura, 2)}</td>
-            <td class="nr">${fmtNr(v.cant_aviz, 2)}</td>
-            <td class="nr">${fmtBani(v.valoare_cost)}</td>
+            <td class="mic" data-sv="${v.prima_zi || ''}">${fmtData(v.prima_zi)}</td>
+            <td data-sv="${escapeHtml(gestiuneNume(v.cod_depozit))}">${escapeHtml(gestiuneNume(v.cod_depozit))}</td>
+            <td class="nr" data-sv="${Number(v.cant_bon||0)}">${fmtNr(v.cant_bon, 2)}</td>
+            <td class="nr" data-sv="${Number(v.cant_factura||0)}">${fmtNr(v.cant_factura, 2)}</td>
+            <td class="nr" data-sv="${Number(v.cant_aviz||0)}">${fmtNr(v.cant_aviz, 2)}</td>
+            <td class="nr" data-sv="${Number(v.valoare_cost||0)}">${fmtBani(v.valoare_cost)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
     </div>
   `;
+  initSortClient();
 }
 
 function activeazaFisaLink() {
@@ -1596,7 +1829,10 @@ async function pagActivitate(filtre) {
   const { data: statsUser } = await stare.client.rpc('ar_activitate_utilizatori');
 
   const pag = Number(filtre.pag) || 1;
-  const constr = () => stare.client.from('ar_activitate').select('*', { count: 'exact' }).order('moment', { ascending: false });
+  const implicitSort = { col: 'moment', dir: 'desc' };
+  const constr = () => aplicaSortare(
+      stare.client.from('ar_activitate').select('*', { count: 'exact' }),
+      filtre, implicitSort);
   const { randuri, total, from, to } = await fetchPagina(constr, pag);
 
   document.getElementById('continut').innerHTML = `
@@ -1604,22 +1840,25 @@ async function pagActivitate(filtre) {
 
     <h3>Utilizatori</h3>
     <div class="tabel-wrap">
-      <table>
+      <table class="sort-client">
         <thead><tr>
-          <th>Nume</th><th>Email</th><th>Rol</th><th>Activ</th>
-          <th>Ultima intrare</th>
-          <th class="nr">Zile active (30 zile)</th>
-          <th class="nr">Pagini deschise (7 zile)</th>
+          <th class="sort-sk" data-sk-type="text">Nume</th>
+          <th class="sort-sk" data-sk-type="text">Email</th>
+          <th class="sort-sk" data-sk-type="text">Rol</th>
+          <th class="sort-sk" data-sk-type="text">Activ</th>
+          <th class="sort-sk" data-sk-type="text">Ultima intrare</th>
+          <th class="nr sort-sk" data-sk-type="nr">Zile active (30 zile)</th>
+          <th class="nr sort-sk" data-sk-type="nr">Pagini deschise (7 zile)</th>
         </tr></thead>
         <tbody>${(statsUser || []).map(u => `
           <tr>
-            <td>${escapeHtml(u.nume)}</td>
-            <td class="mic">${escapeHtml(u.email)}</td>
-            <td><span class="badge ${u.rol==='admin'?'ok':''}">${u.rol}</span></td>
-            <td>${u.activ ? 'da' : 'nu'}</td>
-            <td class="mic">${fmtDataOra(u.ultima_intrare)}</td>
-            <td class="nr">${fmtInt(u.zile_active_30)}</td>
-            <td class="nr">${fmtInt(u.pagini_7)}</td>
+            <td data-sv="${escapeHtml(u.nume)}">${escapeHtml(u.nume)}</td>
+            <td class="mic" data-sv="${escapeHtml(u.email)}">${escapeHtml(u.email)}</td>
+            <td data-sv="${u.rol}"><span class="badge ${u.rol==='admin'?'ok':''}">${u.rol}</span></td>
+            <td data-sv="${u.activ ? '1' : '0'}">${u.activ ? 'da' : 'nu'}</td>
+            <td class="mic" data-sv="${u.ultima_intrare || ''}">${fmtDataOra(u.ultima_intrare)}</td>
+            <td class="nr" data-sv="${Number(u.zile_active_30||0)}">${fmtInt(u.zile_active_30)}</td>
+            <td class="nr" data-sv="${Number(u.pagini_7||0)}">${fmtInt(u.pagini_7)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -1629,7 +1868,11 @@ async function pagActivitate(filtre) {
     ${renderPaginareHTML(from, to, total, pag)}
     <div class="tabel-wrap">
       <table>
-        <thead><tr><th>Moment</th><th>Utilizator</th><th>Ce a făcut</th></tr></thead>
+        <thead><tr>
+          ${thSort('moment', 'Moment', '', filtre, implicitSort)}
+          ${thSort('email', 'Utilizator', '', filtre, implicitSort)}
+          ${thSort('actiune', 'Ce a făcut', '', filtre, implicitSort)}
+        </tr></thead>
         <tbody>${randuri.map(e => `
           <tr>
             <td class="mic">${fmtDataOra(e.moment)}</td>
@@ -1642,6 +1885,8 @@ async function pagActivitate(filtre) {
     ${renderPaginareHTML(from, to, total, pag)}
   `;
   activeazaPaginare();
+  activeazaSortare(filtre, implicitSort);
+  initSortClient();
 }
 
 // ============================================================================

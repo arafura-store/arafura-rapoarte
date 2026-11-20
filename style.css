@@ -239,9 +239,9 @@ a:hover { text-decoration: underline; }
 .filtre-bar .btn-descarca:hover { background: var(--accent); color: #fff; }
 
 .continut {
-  padding: 16px;
-  max-width: 1400px;
-  margin: 0 auto;
+  /* PAS 5 (corecturi): foloseşte toată lăţimea ferestrei pentru liste late. */
+  padding: 12px 12px;
+  margin: 0;
 }
 
 .incarca {
@@ -296,7 +296,10 @@ a:hover { text-decoration: underline; }
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow-x: auto;
+  /* PAS 5 B.1: scroll propriu (orizontal + vertical) ca sticky th sa functioneze pe TOATE tabelele.
+     max-height mare — tabelele scurte nu primesc scroll, tabelele lungi au scroll propriu şi th stă sus. */
+  overflow: auto;
+  max-height: calc(100vh - 180px);
   box-shadow: var(--shadow);
 }
 
@@ -323,7 +326,37 @@ th {
   position: sticky;
   top: 0;
   z-index: 1;
+  line-height: 1.25;
+  vertical-align: bottom;
 }
+/* PAS 5 B.2: coloanele numerice au titlu aliniat la dreapta, deasupra valorilor. */
+th.nr { text-align: right; }
+
+/* PAS 5 A: eticheta mică „cu TVA" / „fără TVA" sub titlu sau sub o cifră mare. */
+.eticheta-tva {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-dim);
+  margin-left: 4px;
+}
+th .eticheta-tva { display: block; margin-left: 0; margin-top: 2px; }
+
+/* PAS 5 B.4: rând de total jos; rămâne vizibil, nu se sortează cu restul. */
+tfoot tr.rand-total td {
+  background: var(--bg);
+  border-top: 2px solid var(--border);
+  font-variant-numeric: tabular-nums;
+  /* lipeşte rândul de total de baza tabelului atunci când există scroll vertical propriu. */
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+}
+
+/* PAS 5 B.2: coloanele cu numere stau strânse pe lăţime după conţinut, nu se întind. */
+th.nr, td.nr { white-space: nowrap; width: 1%; }
 
 tbody tr:hover { background: var(--bg); cursor: default; }
 tbody tr.clickabil { cursor: pointer; }
@@ -409,9 +442,29 @@ th.sortabil:hover { background: var(--border); }
 th.sortabil .sage { margin-left: 4px; opacity: 0.6; font-size: 10px; }
 th.sortabil.activ .sage { opacity: 1; color: var(--accent); }
 
-/* tabele late: coloana denumire latime minima, prima coloana sticky pe mobile */
-.col-denumire { min-width: 280px; }
+/* PAS 5 (corecturi): „Denumire" şi „Furnizor" se rup pe două rânduri cu lăţime maximă,
+   ca listele să încapă pe 1366 px fără derulare orizontală. */
+th.col-denumire, td.col-denumire {
+  width: 300px;
+  max-width: 300px;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+}
+th.col-furnizor, td.col-furnizor {
+  width: 160px;
+  max-width: 160px;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+}
 .col-cod-bare { font-family: var(--mono); letter-spacing: -0.3px; }
+
+/* PAS 5 (corecturi): tabele compacte pentru listele late (ex. Marfă care stagnează). */
+.tabel-compact table { font-size: 12px; }
+.tabel-compact table th, .tabel-compact table td { padding: 6px 7px; }
 
 /* celule stoc negativ: scrise cu rosu (vederea „Pe produs" si „Pe gestiuni") */
 td.nr.neg { color: var(--danger); }
@@ -426,15 +479,18 @@ td.nr.neg { color: var(--danger); }
     box-shadow: 1px 0 0 var(--border);
   }
   .tabel-cu-sticky table th:first-child { z-index: 3; background: var(--bg); }
-  .col-denumire { min-width: 200px; }
+  th.col-denumire, td.col-denumire { max-width: 200px; }
+  th.col-furnizor, td.col-furnizor { max-width: 120px; }
 }
 
 /* ======== STOC — vederea „Pe produs" ========
    Pe calculator: toate coloanele, cu scroll orizontal si primele doua coloane fixe.
    Pe telefon (<700px): doar cod, denumire, pret achizitie, pret vanzare, total;
    coloanele optionale (gestiuni, pe_drum, valoare_cost etc.) sunt ascunse. */
-.tabel-pe-produs { overflow-x: auto; }
+.tabel-pe-produs { overflow-x: auto; max-height: calc(100vh - 220px); }
 .tabel-pe-produs table { min-width: 100%; }
+/* PAS 5 B.1: cap sticky și cu derulare orizontală; primele coloane stau fixe lateral. */
+.tabel-pe-produs thead th { position: sticky; top: 0; z-index: 4; }
 
 @media (min-width: 721px) {
   /* a doua coloana (cod_bare) e „sub" prima; a treia (denumire) e si ea sticky */
