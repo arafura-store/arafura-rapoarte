@@ -527,6 +527,113 @@ td.nr.neg { color: var(--danger); }
 .fisa-antet .meta { color: var(--text-dim); font-size: 13px; }
 .fisa-antet .meta code { font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
 
+/* ======== PAS 6 D: DROPDOWN CU CĂUTARE (furnizor + familie) ======== */
+.filtre-cautabil { position: relative; }
+.filtre-cautabil > span {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+.sel-cautabil { position: relative; display: inline-block; }
+.sel-cautabil-trig {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  min-width: 180px;
+  max-width: 260px;
+  cursor: pointer;
+  text-align: left;
+}
+.sel-cautabil-trig:hover { border-color: var(--accent); }
+.sel-cautabil-trig .sel-cautabil-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sel-cautabil-trig .sage { color: var(--text-dim); font-size: 10px; }
+.sel-cautabil-panou {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 50;
+  min-width: 260px;
+  max-width: 360px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+  padding: 6px;
+}
+.sel-cautabil-cauta {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.sel-cautabil-cauta:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sel-cautabil-lista {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.sel-cautabil-lista li {
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  border-radius: 4px;
+  line-height: 1.3;
+}
+.sel-cautabil-lista li:hover,
+.sel-cautabil-lista li.activ {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ======== PAS 6 A: sub-text pe cartela (ex. „fără marfa nouă") ======== */
+.sub-cartela {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  line-height: 1.25;
+}
+.cartela-link .sub-cartela { color: var(--text-dim); }
+
+/* ======== PAS 6 C: evidenţierea scurtă a rândului din care s-a plecat ======== */
+tr.rand-plecare > td {
+  background: #fff7cc;
+  animation: evidentiere-plecare 2.5s ease-out 1;
+}
+@keyframes evidentiere-plecare {
+  0%   { background: #fff2a3; }
+  60%  { background: #fff7cc; }
+  100% { background: transparent; }
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    tr.rand-plecare > td { background: #3a3014; }
+    @keyframes evidentiere-plecare {
+      0%   { background: #4a3f16; }
+      60%  { background: #3a3014; }
+      100% { background: transparent; }
+    }
+  }
+}
+
 /* ======== RESPONSIVE ======== */
 @media (max-width: 720px) {
   .top-bar { flex-direction: column; align-items: flex-start; padding: 8px; gap: 8px; }

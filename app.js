@@ -102,6 +102,24 @@ function escapeHtml(s) {
   if (s === null || s === undefined) return '';
   return String(s).replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
 }
+// PAS 6 B: data scurtă zz.ll.aa (pentru coloane strâmte în tabele).
+function fmtDataScurta(d) {
+  if (!d) return '';
+  const date = new Date(d);
+  if (Number.isNaN(date.getTime())) return '';
+  const zz = String(date.getDate()).padStart(2, '0');
+  const ll = String(date.getMonth() + 1).padStart(2, '0');
+  const aa = String(date.getFullYear()).slice(-2);
+  return `${zz}.${ll}.${aa}`;
+}
+// PAS 6 D: normalizare pentru căutare — majuscule, fără diacritice, fără sedilă.
+function normCautare(s) {
+  if (!s) return '';
+  let v = String(s).toLocaleUpperCase('ro');
+  try { v = v.normalize('NFD').replace(/[̀-ͯ]/g, ''); } catch {}
+  // Ş (U+015E) şi Ţ (U+0162) nu se descompun NFD — mapare manuală.
+  return v.replace(/Ş/g, 'S').replace(/Ţ/g, 'T');
+}
 function gestiuneNume(cod) { return GEST_MAP[cod]?.nume || cod; }
 function gestiuneNumeFull(cod) { return GEST_MAP[cod]?.nume_full || cod; }
 function esteMagazin(cod) { return GEST_MAP[cod]?.tip === 'magazin'; }
@@ -164,6 +182,137 @@ const stare = {
   utilizator: null,
   stareDatelor: null,
 };
+
+// PAS 6 C: cache pentru întoarcerea din fişa produsului.
+//   Salvat la click pe un rând clickabil; folosit la următorul routeaza() dacă
+//   hash-ul se potriveşte (venim înapoi din fişă).
+const stareListe = {
+  cache: null,         // { hash, continutHtml, filtreBarHtml, filtreBarDisplay, scrollY, codPlecare, reInit, ts }
+  reInitLista: null,   // funcţie setată de fiecare pag* după render
+};
+
+// ============================================================================
+// PAS 6 D: Dropdown cu căutare (furnizor + familie)
+// ============================================================================
+//   - Butonul vizibil arată valoarea curentă.
+//   - Panou cu input de căutare + listă <ul>.
+//   - Normalizare la potrivire (majuscule, fără diacritice).
+//   - Săgeţi, Enter, Esc, click pe opţiune.
+//   - Valoarea e ţinută într-un <input type=hidden> cu `name=...` — change
+//     se dispatcheaza la selectie, ca filtrele-bar să se comporte identic cu
+//     <select>-urile existente.
+
+function selectCautabilHtml(name, titlu, val, optiuni) {
+  // optiuni = [{val, txt}], prima opţiune e implicit „— toate —" / „— toţi —".
+  const curent = optiuni.find(o => o.val === (val || '')) || optiuni[0] || { val: '', txt: '' };
+  const lis = optiuni.map(o => {
+    const n = normCautare(o.txt + ' ' + o.val);
+    const activ = (o.val === (val || '')) ? ' activ' : '';
+    return `<li role="option" data-val="${escapeHtml(o.val)}" data-norm="${escapeHtml(n)}" class="${activ.trim()}">${escapeHtml(o.txt)}</li>`;
+  }).join('');
+  return `<label class="filtre-cautabil"><span>${escapeHtml(titlu)}</span>
+    <div class="sel-cautabil" data-name="${name}">
+      <button type="button" class="sel-cautabil-trig">
+        <span class="sel-cautabil-text">${escapeHtml(curent.txt)}</span>
+        <span class="sage">▾</span>
+      </button>
+      <input type="hidden" name="${name}" value="${escapeHtml(val||'')}">
+      <div class="sel-cautabil-panou" hidden>
+        <input type="text" class="sel-cautabil-cauta" placeholder="caută…" autocomplete="off" />
+        <ul class="sel-cautabil-lista" role="listbox">${lis}</ul>
+      </div>
+    </div></label>`;
+}
+
+function initSelecteCautabile(container) {
+  const root = container || document;
+  // Click în afara → închide toate panourile (o singură dată global).
+  if (!document._selCautabilInitGlobal) {
+    document._selCautabilInitGlobal = true;
+    document.addEventListener('click', (ev) => {
+      document.querySelectorAll('.sel-cautabil').forEach(sel => {
+        const panou = sel.querySelector('.sel-cautabil-panou');
+        if (panou && !panou.hidden && !sel.contains(ev.target)) panou.hidden = true;
+      });
+    });
+  }
+  root.querySelectorAll('.sel-cautabil').forEach(sel => {
+    const trig   = sel.querySelector('.sel-cautabil-trig');
+    const textEl = sel.querySelector('.sel-cautabil-text');
+    const hidden = sel.querySelector('input[type=hidden]');
+    const panou  = sel.querySelector('.sel-cautabil-panou');
+    const cauta  = sel.querySelector('.sel-cautabil-cauta');
+    const lista  = sel.querySelector('.sel-cautabil-lista');
+    let activIdx = -1;
+
+    const vizibile = () => [...lista.querySelectorAll('li:not([hidden])')];
+    function setActiv(idx) {
+      const vis = vizibile();
+      vis.forEach(li => li.classList.remove('activ'));
+      if (idx >= 0 && idx < vis.length) {
+        vis[idx].classList.add('activ');
+        vis[idx].scrollIntoView({ block: 'nearest' });
+        activIdx = idx;
+      } else activIdx = -1;
+    }
+    function filtreaza(q) {
+      const qn = normCautare(q);
+      lista.querySelectorAll('li').forEach(li => {
+        const n = li.dataset.norm || '';
+        li.hidden = qn && !n.includes(qn);
+      });
+      setActiv(vizibile().length > 0 ? 0 : -1);
+    }
+    function deschide() {
+      panou.hidden = false;
+      cauta.value = '';
+      filtreaza('');
+      setTimeout(() => cauta.focus(), 0);
+    }
+    function inchide() { panou.hidden = true; }
+    function selecteaza(li) {
+      if (!li) return;
+      const v = li.dataset.val;
+      const t = li.textContent;
+      hidden.value = v;
+      textEl.textContent = t;
+      inchide();
+      hidden.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    trig.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      if (panou.hidden) deschide(); else inchide();
+    });
+    cauta.addEventListener('input', () => filtreaza(cauta.value));
+    cauta.addEventListener('keydown', (ev) => {
+      const vis = vizibile();
+      if (ev.key === 'ArrowDown') { ev.preventDefault(); setActiv(Math.min(activIdx + 1, vis.length - 1)); }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); setActiv(Math.max(activIdx - 1, 0)); }
+      else if (ev.key === 'Enter')  { ev.preventDefault(); selecteaza(vis[activIdx] || vis[0]); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); inchide(); trig.focus(); }
+    });
+    lista.addEventListener('click', (ev) => {
+      const li = ev.target.closest('li');
+      if (li) selecteaza(li);
+    });
+  });
+}
+
+// PAS 6 C+D: ataşează schimbarea de rute la <select>/<input[name]> din filtre-bar.
+//   Chemat din construiesteFiltreHTML (fresh render) şi din reInit (cache restore).
+function atasareFiltreBarChange(barOpt) {
+  const bar = barOpt || document.getElementById('filtre-bar');
+  if (!bar) return;
+  bar.querySelectorAll('[name]').forEach(el => {
+    el.addEventListener('change', () => {
+      const f = {};
+      bar.querySelectorAll('[name]').forEach(x => { if (x.value) f[x.name] = x.value; });
+      const ruta = location.hash.replace(/^#\//,'').split('?')[0];
+      location.hash = '#/' + ruta + '?' + new URLSearchParams(f).toString();
+    });
+  });
+}
 
 // ============================================================================
 // SUPABASE
@@ -278,6 +427,70 @@ async function routeaza() {
     location.replace('#/stoc' + (qs ? '?' + qs : ''));
     return;
   }
+
+  // PAS 6 C: cache hit — venim înapoi din fişă pe aceeaşi listă.
+  // Restaurăm HTML-ul salvat, reataşăm listenerii, repoziţionăm scroll-ul
+  // şi marcăm scurt rândul din care s-a plecat. NU re-cerem datele.
+  if (stareListe.cache && stareListe.cache.hash === h
+      && (Date.now() - stareListe.cache.ts) < 30 * 60 * 1000) {
+    const c = stareListe.cache;
+    stareListe.cache = null;
+    const continut = document.getElementById('continut');
+    const bar = document.getElementById('filtre-bar');
+    continut.innerHTML = c.continutHtml;
+    bar.innerHTML = c.filtreBarHtml;
+    bar.style.display = c.filtreBarDisplay;
+    marcheazaMeniu(ruta);
+    // Logul e „fire-and-forget" aici — un await pe insert-ul Supabase ar întârzia
+    // restaurarea scroll-ului cu sute de ms.
+    logActivitate(ruta, 'view', Object.assign({ cache: 1 }, Object.fromEntries(new URLSearchParams(qs || ''))));
+    // Filtre-bar: re-ataşăm dropdown-urile cu căutare şi listener-ul de schimbare
+    // rută pe DOM-ul proaspăt din innerHTML (listenerii originali s-au pierdut).
+    initSelecteCautabile(bar);
+    atasareFiltreBarChange(bar);
+    if (typeof c.reInit === 'function') {
+      try { c.reInit(); } catch (e) { console.error('[reInit lista]', e); }
+    }
+    requestAnimationFrame(() => {
+      // Scroll-ul ferestrei.
+      window.scrollTo(0, c.scrollY);
+      // Scroll-ul fiecărui .tabel-wrap (vertical + orizontal — Stoc – Pe produs).
+      const wraps = [...continut.querySelectorAll('.tabel-wrap')];
+      wraps.forEach((w, i) => {
+        const s = c.scrollWraps?.[i];
+        if (s) {
+          if (typeof s.scrollTop  === 'number') w.scrollTop  = s.scrollTop;
+          if (typeof s.scrollLeft === 'number') w.scrollLeft = s.scrollLeft;
+        }
+      });
+      // Rândul de plecare — adăugăm clasa imediat (în acelaşi rAF),
+      // iar visibility-check-ul se face pe baza măsurătorilor DE DUPĂ
+      // setarea scroll-urilor, pentru că browserul a terminat aplicarea lor
+      // până la momentul `getBoundingClientRect()`.
+      if (c.codPlecare) {
+        const row = continut.querySelector('tr.clickabil[data-cod="' + CSS.escape(c.codPlecare) + '"]');
+        if (row) {
+          row.classList.add('rand-plecare');
+          // Verificăm doar vizibilitatea VERTICALĂ: rândul în Stoc – Pe produs
+          // e mai lat decât fereastra (primele coloane sunt sticky, scroll
+          // lateral e păstrat separat), deci nu are sens să cerem rect.right ≤ vw.
+          const rr = row.getBoundingClientRect();
+          const vh = window.innerHeight || document.documentElement.clientHeight;
+          const vizibilVertical = rr.top >= 0 && rr.bottom <= vh;
+          if (!vizibilVertical) row.scrollIntoView({ block: 'center' });
+          setTimeout(() => row.classList.remove('rand-plecare'), 2500);
+        }
+      }
+    });
+    return;
+  }
+  // Navigare efectivă. NU ştergem cache-ul când intrăm într-o fişă, altfel la
+  // „Înapoi" nu mai avem ce restaura. La orice altă rută (altă listă, Pe scurt,
+  // Activitate…) cache-ul listei precedente devine irelevant → îl eliberăm.
+  if (ruta !== 'fisa') {
+    stareListe.cache = null;
+  }
+
   const filtre = Object.fromEntries(new URLSearchParams(qs || ''));
   marcheazaMeniu(ruta);
   document.getElementById('filtre-bar').style.display = 'none';
@@ -329,30 +542,26 @@ function construiesteFiltreHTML(filtre, optiuni, listeExtra) {
     </select></label>`);
   }
   if (optiuni.furnizor && (listeExtra?.furnizori?.length)) {
+    // PAS 6 D: dropdown cu căutare. Rămân şi „— toţi —" şi (opţional) „(fără furnizor)".
     const val = filtre.f || '';
-    const opts = listeExtra.furnizori.map(f => `<option value="${escapeHtml(f)}" ${val===f?'selected':''}>${escapeHtml(f)}</option>`).join('');
-    const extra = optiuni.extraFurnizor
-      ? `<option value="(fără furnizor)" ${val==='(fără furnizor)'?'selected':''}>(fără furnizor)</option>`
-      : '';
-    partsHtml.push(`<label>Furnizor<select name="f">
-      <option value="">— toţi —</option>
-      ${opts}${extra}
-    </select></label>`);
+    const opts = [{ val: '', txt: '— toţi —' }];
+    listeExtra.furnizori.forEach(f => opts.push({ val: f, txt: f }));
+    if (optiuni.extraFurnizor) opts.push({ val: '(fără furnizor)', txt: '(fără furnizor)' });
+    partsHtml.push(selectCautabilHtml('f', 'Furnizor', val, opts));
   }
   if (optiuni.familie && (listeExtra?.familii?.length)) {
-    const val = filtre.fam || '';
     // PAS 4: familii poate fi array de string-uri (cod) sau array de {cod, nume}.
     //        Se afiseaza „cod – nume" cand nume e prezent.
-    const opts = listeExtra.familii.map(f => {
+    // PAS 6 D: dropdown cu căutare (potrivire oriunde în cod sau nume).
+    const val = filtre.fam || '';
+    const opts = [{ val: '', txt: '— toate —' }];
+    listeExtra.familii.forEach(f => {
       const cod  = (typeof f === 'object') ? f.cod  : f;
       const nume = (typeof f === 'object') ? (f.nume || '') : '';
       const label = cod + (nume ? ' – ' + nume : '');
-      return `<option value="${escapeHtml(cod)}" ${val===cod?'selected':''}>${escapeHtml(label)}</option>`;
-    }).join('');
-    partsHtml.push(`<label>Familie<select name="fam">
-      <option value="">— toate —</option>
-      ${opts}
-    </select></label>`);
+      opts.push({ val: cod, txt: label });
+    });
+    partsHtml.push(selectCautabilHtml('fam', 'Familie', val, opts));
   }
   if (optiuni.grupa) {
     const val = filtre.gr || '';
@@ -382,7 +591,16 @@ function construiesteFiltreHTML(filtre, optiuni, listeExtra) {
   if (optiuni.vedere && optiuni.vedere.length > 0) {
     const val = filtre.v || (optiuni.vedereDefault || '');
     const opts = optiuni.vedere.map(v => `<option value="${v.val}" ${val===v.val?'selected':''}>${escapeHtml(v.txt)}</option>`).join('');
-    partsHtml.push(`<label>Vedere<select name="v">${opts}</select></label>`);
+    const eticheta = optiuni.vedereLabel || 'Vedere';
+    partsHtml.push(`<label>${escapeHtml(eticheta)}<select name="v">${opts}</select></label>`);
+  }
+  // PAS 6 A: mod pe pagina „Marfă care stagnează" — Stagnează / Marfă nouă.
+  if (optiuni.modStagn) {
+    const val = filtre.m || 'stagn';
+    partsHtml.push(`<label>Mod<select name="m">
+      <option value="stagn" ${val==='stagn'?'selected':''}>Stagnează (fără vânzare)</option>
+      <option value="noua"  ${val==='noua'?'selected':''}>Marfă nouă (primită în perioadă)</option>
+    </select></label>`);
   }
   if (optiuni.sursa && optiuni.sursa.length > 0) {
     const val = filtre.s || '';
@@ -396,16 +614,10 @@ function construiesteFiltreHTML(filtre, optiuni, listeExtra) {
   const bar = document.getElementById('filtre-bar');
   bar.style.display = '';
   bar.innerHTML = partsHtml.join('');
-
-  bar.querySelectorAll('select, input').forEach(el => {
-    const ev = el.tagName === 'INPUT' ? 'change' : 'change';
-    el.addEventListener(ev, () => {
-      const f = {};
-      bar.querySelectorAll('select, input').forEach(x => { if (x.value) f[x.name] = x.value; });
-      const ruta = location.hash.replace(/^#\//,'').split('?')[0];
-      location.hash = '#/' + ruta + '?' + new URLSearchParams(f).toString();
-    });
-  });
+  // PAS 6 D: ataşează dropdown-urile cu căutare (furnizor + familie).
+  initSelecteCautabile(bar);
+  // PAS 6 C: listener de schimbare rută (extras, ca să poată fi re-apelat la cache restore).
+  atasareFiltreBarChange(bar);
 }
 
 // ============================================================================
@@ -683,7 +895,7 @@ async function pagPeScurt() {
       <a class="cartela danger cartela-link" data-ruta="lipsuri" data-v="lipsa"><div class="eticheta">Lipsă</div><div class="valoare">${fmtInt(s.nr_lipsa)}</div></a>
       <a class="cartela warn cartela-link"   data-ruta="lipsuri" data-v="termin"><div class="eticheta">Pe terminate</div><div class="valoare">${fmtInt(s.nr_termin)}</div></a>
       <a class="cartela cartela-link"        data-ruta="stocuri-negative"><div class="eticheta">Stoc negativ total (magazine)</div><div class="valoare">${fmtInt(s.nr_stoc_negativ_mag_total)}</div></a>
-      <a class="cartela cartela-link"        data-ruta="stagneaza"><div class="eticheta">Stoc fără vânzare (la cost)</div><div class="valoare">${fmtBani(s.stoc_fara_vz_total)} ${etichetaTva(false)}</div></a>
+      <a class="cartela cartela-link"        data-ruta="stagneaza"><div class="eticheta">Stoc fără vânzare (la cost)</div><div class="valoare">${fmtBani(s.stoc_fara_vz_total)} ${etichetaTva(false)}</div><div class="sub-cartela">marfă nouă, nenumărată: ${fmtBani(s.marfa_noua_total)}</div></a>
       <div class="cartela warn"><div class="eticheta">Pierdere pe săptămână (lipsă)</div><div class="valoare">${fmtBani(s.pierdere_sapt_total)} ${etichetaTva(true)}</div></div>
     </div>
 
@@ -951,13 +1163,17 @@ async function pagLipsuri(filtre) {
     </div>
     ${renderPaginareHTML(from, to, total, pag)}
   `;
-  activeazaFisaLink();
-  activeazaPaginare();
-  activeazaSortare(filtre, implicitSort);
-  initSortClient();
-  document.getElementById('btn-descarca').addEventListener('click', () => {
-    descarcaCuBucla('lipsuri', coloaneCsvLipsuri(), constr, total);
-  });
+  // PAS 6 C: tot ce reataşează listenerii — poate fi apelat şi la restore din cache.
+  const reInit = () => {
+    activeazaFisaLink();
+    activeazaPaginare();
+    activeazaSortare(filtre, implicitSort);
+    initSortClient();
+    const btn = document.getElementById('btn-descarca');
+    if (btn) btn.addEventListener('click', () => descarcaCuBucla('lipsuri', coloaneCsvLipsuri(), constr, total));
+  };
+  reInit();
+  stareListe.reInitLista = reInit;
 }
 
 function coloaneCsvLipsuri() {
@@ -1001,25 +1217,38 @@ async function pagStagneaza(filtre) {
   construiesteFiltreHTML(filtre, {
     gestiune: 'all', furnizor: true, familie: true, grupa: true, cautare: true, descarca: true,
     vedere: [
-      { val: '8',     txt: 'Fără vânzare 8 săpt.' },
-      { val: '4',     txt: 'Fără vânzare 4 săpt.' },
-      { val: '2',     txt: 'Fără vânzare 2 săpt.' },
-      { val: '1',     txt: 'Fără vânzare 1 săpt.' },
+      { val: '8',     txt: '8 săpt.' },
+      { val: '4',     txt: '4 săpt.' },
+      { val: '2',     txt: '2 săpt.' },
+      { val: '1',     txt: '1 săpt.' },
       { val: '6luni', txt: 'Peste 6 luni (sau niciodată)' },
     ],
     vedereDefault: '8',
+    vedereLabel: 'Perioadă',
+    // PAS 6 A: mod nou — comută între „Stagnează" şi „Marfă nouă" pe aceeaşi perioadă.
+    modStagn: true,
   }, { furnizori, familii });
 
   const perioada = filtre.v || '8';
-  const campStagn = {
-    '1':     'stagneaza_1w',
-    '2':     'stagneaza_2w',
-    '4':     'stagneaza_4w',
-    '8':     'stagneaza',
-    '6luni': 'stagneaza_6luni',
-  }[perioada];
+  // PAS 6 A: m = 'stagn' (implicit) sau 'noua'.
+  const modStagn = (filtre.m === 'noua') ? 'noua' : 'stagn';
+  const campStagn = (modStagn === 'noua')
+    ? ({
+        '1':     'noua_1w',
+        '2':     'noua_2w',
+        '4':     'noua_4w',
+        '8':     'noua_8w',
+        '6luni': 'noua_6luni',
+      })[perioada]
+    : ({
+        '1':     'stagneaza_1w',
+        '2':     'stagneaza_2w',
+        '4':     'stagneaza_4w',
+        '8':     'stagneaza',
+        '6luni': 'stagneaza_6luni',
+      })[perioada];
 
-  // Sumar RPC cu filtre
+  // Sumar RPC cu filtre — întoarce şi contorii „marfă nouă" pentru aceeaşi perioadă.
   const { data: sumar } = await stare.client.rpc('ar_stagn_sumar', {
     p_perioada: perioada,
     p_mag:      filtre.g   || null,
@@ -1028,7 +1257,7 @@ async function pagStagneaza(filtre) {
     p_grupa:    filtre.gr  || null,
     p_q:        filtre.q   || null,
   });
-  const ss = (sumar && sumar[0]) || { nr_pozitii: 0, valoare_total: 0 };
+  const ss = (sumar && sumar[0]) || { nr_pozitii: 0, valoare_total: 0, nr_noua: 0, valoare_noua: 0 };
 
   const pag = Number(filtre.pag) || 1;
   const implicitSort = { col: 'valoare_cost', dir: 'desc' };
@@ -1050,7 +1279,10 @@ async function pagStagneaza(filtre) {
   document.getElementById('continut').innerHTML = `
     <h2 class="titlu-pagina">Marfă care stagnează</h2>
     <p class="mic" style="color:var(--text-dim);margin:0 0 10px;">
-      Pentru selecţia curentă: <strong>${fmtInt(ss.nr_pozitii)}</strong> poziţii — <strong>${fmtBani(ss.valoare_total)}</strong> la cost ${etichetaTva(false)}
+      Pentru selecţia curentă:
+      <strong>Stagnează: ${fmtInt(ss.nr_pozitii)} poziţii – ${fmtBani(ss.valoare_total)}</strong> la cost ${etichetaTva(false)}
+      &nbsp;·&nbsp;
+      <strong>Marfă nouă, nenumărată: ${fmtInt(ss.nr_noua)} poziţii – ${fmtBani(ss.valoare_noua)}</strong>
     </p>
     ${renderPaginareHTML(from, to, total, pag)}
     <div class="tabel-wrap tabel-cu-sticky tabel-compact">
@@ -1064,13 +1296,19 @@ async function pagStagneaza(filtre) {
           ${thSort('cod_familie', 'Familie', '', filtre, implicitSort)}
           ${thSort('stoc', 'Stoc', 'nr', filtre, implicitSort)}
           ${thSortHtml('pret_achizitie', 'Preţ achiziţie<br>' + etichetaTva(false), 'nr', filtre, implicitSort)}
+          ${thSort('factura_data', 'Ultima factură', '', filtre, implicitSort)}
+          ${thSort('ultima_intrare', 'Ultima intrare', '', filtre, implicitSort)}
           ${thSortHtml('pret_lista', capTvaMix('Preţ vânzare'), 'nr', filtre, implicitSort)}
           ${thSortHtml('valoare_cost', 'Val. cost<br>' + etichetaTva(false), 'nr', filtre, implicitSort)}
-          ${thSort('ultima_vz_gestiune', 'Ultima vz. gest.', '', filtre, implicitSort)}
-          ${thSort('ultima_vz_firma', 'Ultima vz. firmă', '', filtre, implicitSort)}
+          ${thSort('ultima_vz_gestiune', 'Ult. vz. gest.', '', filtre, implicitSort)}
+          ${thSort('ultima_vz_firma', 'Ult. vz. firmă', '', filtre, implicitSort)}
         </tr></thead>
         <tbody>
-        ${randuri.map(r => `
+        ${randuri.map(r => {
+          const titleFactura = r.factura_furnizor
+            ? ` title="${escapeHtml(r.factura_furnizor)}"`
+            : '';
+          return `
           <tr class="clickabil" data-cod="${escapeHtml(r.cod_art)}">
             <td>${escapeHtml(gestiuneNume(r.cod_depozit))}</td>
             <td><code>${escapeHtml(r.cod_art)}</code></td>
@@ -1080,35 +1318,49 @@ async function pagStagneaza(filtre) {
             <td class="mic">${escapeHtml(r.cod_familie || '')}</td>
             <td class="nr">${fmtNr(r.stoc)}</td>
             <td class="nr">${r.pret_achizitie ? fmtBani(r.pret_achizitie) : ''}</td>
+            <td class="mic"${titleFactura}>${fmtDataScurta(r.factura_data)}</td>
+            <td class="mic">${fmtDataScurta(r.ultima_intrare)}</td>
             <td class="nr">${pretVzHtml(r)}</td>
             <td class="nr">${fmtBani(r.valoare_cost)}</td>
-            <td class="mic">${fmtData(r.ultima_vz_gestiune)}</td>
-            <td class="mic">${fmtData(r.ultima_vz_firma)}</td>
-          </tr>`).join('')}
+            <td class="mic">${fmtDataScurta(r.ultima_vz_gestiune)}</td>
+            <td class="mic">${fmtDataScurta(r.ultima_vz_firma)}</td>
+          </tr>`;
+        }).join('')}
         </tbody>
       </table>
     </div>
+    <p class="mic" style="color:var(--text-dim);margin-top:6px;">
+      Marfă nouă = are stoc acum, dar nu avea stoc în această gestiune la începutul perioadei.
+    </p>
     ${renderPaginareHTML(from, to, total, pag)}
   `;
-  activeazaFisaLink();
-  activeazaPaginare();
-  activeazaSortare(filtre, implicitSort);
-  document.getElementById('btn-descarca').addEventListener('click', () => {
-    descarcaCuBucla('stagneaza', [
-      { titlu: 'Gestiune',   val: r => gestiuneNumeFull(r.cod_depozit) },
-      { titlu: 'Cod',        val: 'cod_art' },
-      { titlu: 'Cod de bare',val: 'cod_bare' },
-      { titlu: 'Denumire',   val: 'nume_art' },
-      { titlu: 'Furnizor',   val: 'furnizor' },
-      { titlu: 'Familie',    val: 'cod_familie' },
-      { titlu: 'Stoc',       val: 'stoc' },
-      { titlu: 'Preţ achiziţie/buc (fără TVA)', val: 'pret_achizitie' },
-      { titlu: 'Preţ vânzare/buc (cu TVA la magazine, fără TVA la depozite)', val: pretVzVal },
-      { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
-      { titlu: 'Ultima vânz. gestiune',   val: r => fmtData(r.ultima_vz_gestiune) },
-      { titlu: 'Ultima vânz. firmă',      val: r => fmtData(r.ultima_vz_firma) },
-    ], constr, total);
-  });
+  const reInit = () => {
+    activeazaFisaLink();
+    activeazaPaginare();
+    activeazaSortare(filtre, implicitSort);
+    const btn = document.getElementById('btn-descarca');
+    if (btn) btn.addEventListener('click', () => {
+      descarcaCuBucla('stagneaza', [
+        { titlu: 'Gestiune',   val: r => gestiuneNumeFull(r.cod_depozit) },
+        { titlu: 'Cod',        val: 'cod_art' },
+        { titlu: 'Cod de bare',val: 'cod_bare' },
+        { titlu: 'Denumire',   val: 'nume_art' },
+        { titlu: 'Furnizor',   val: 'furnizor' },
+        { titlu: 'Familie',    val: 'cod_familie' },
+        { titlu: 'Stoc',       val: 'stoc' },
+        { titlu: 'Preţ achiziţie/buc (fără TVA)', val: 'pret_achizitie' },
+        { titlu: 'Ultima factură (data)',    val: r => fmtData(r.factura_data) },
+        { titlu: 'Ultima factură (furnizor)',val: 'factura_furnizor' },
+        { titlu: 'Ultima intrare în gestiune', val: r => fmtData(r.ultima_intrare) },
+        { titlu: 'Preţ vânzare/buc (cu TVA la magazine, fără TVA la depozite)', val: pretVzVal },
+        { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
+        { titlu: 'Ultima vânz. gestiune',   val: r => fmtData(r.ultima_vz_gestiune) },
+        { titlu: 'Ultima vânz. firmă',      val: r => fmtData(r.ultima_vz_firma) },
+      ], constr, total);
+    });
+  };
+  reInit();
+  stareListe.reInitLista = reInit;
 }
 
 // ============================================================================
@@ -1203,23 +1455,28 @@ async function pagStocuriNegative(filtre) {
     </div>
     ${renderPaginareHTML(from, to, total, pag)}
   `;
-  activeazaFisaLink();
-  activeazaPaginare();
-  activeazaSortare(filtre, implicitSort);
-  initSortClient();
-  document.getElementById('btn-descarca').addEventListener('click', () => {
-    descarcaCuBucla('stocuri-negative', [
-      { titlu: 'Gestiune',   val: r => gestiuneNumeFull(r.cod_depozit) },
-      { titlu: 'Cod',        val: 'cod_art' },
-      { titlu: 'Cod de bare',val: 'cod_bare' },
-      { titlu: 'Denumire',   val: 'nume_art' },
-      { titlu: 'Furnizor',   val: 'furnizor' },
-      { titlu: 'Stoc',       val: 'stoc' },
-      { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
-      { titlu: 'Ritm',       val: 'ritm' },
-      { titlu: 'Preţ vânzare/buc (cu TVA la magazine, fără TVA la depozite)', val: pretVzVal },
-    ], constr, total);
-  });
+  const reInit = () => {
+    activeazaFisaLink();
+    activeazaPaginare();
+    activeazaSortare(filtre, implicitSort);
+    initSortClient();
+    const btn = document.getElementById('btn-descarca');
+    if (btn) btn.addEventListener('click', () => {
+      descarcaCuBucla('stocuri-negative', [
+        { titlu: 'Gestiune',   val: r => gestiuneNumeFull(r.cod_depozit) },
+        { titlu: 'Cod',        val: 'cod_art' },
+        { titlu: 'Cod de bare',val: 'cod_bare' },
+        { titlu: 'Denumire',   val: 'nume_art' },
+        { titlu: 'Furnizor',   val: 'furnizor' },
+        { titlu: 'Stoc',       val: 'stoc' },
+        { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
+        { titlu: 'Ritm',       val: 'ritm' },
+        { titlu: 'Preţ vânzare/buc (cu TVA la magazine, fără TVA la depozite)', val: pretVzVal },
+      ], constr, total);
+    });
+  };
+  reInit();
+  stareListe.reInitLista = reInit;
 }
 
 // ============================================================================
@@ -1320,22 +1577,27 @@ async function pagRetururi(filtre) {
     </div>
     ${renderPaginareHTML(from, to, total, pag)}
   `;
-  activeazaFisaLink();
-  activeazaPaginare();
-  activeazaSortare(filtre, implicitSort);
-  initSortClient();
-  document.getElementById('btn-descarca').addEventListener('click', () => {
-    descarcaCuBucla('retururi', [
-      { titlu: 'Săptămâna (prima zi)', val: r => fmtData(r.prima_zi) },
-      { titlu: 'Magazin',    val: r => gestiuneNumeFull(r.cod_depozit) },
-      { titlu: 'Cod',        val: 'cod_art' },
-      { titlu: 'Cod de bare',val: 'cod_bare' },
-      { titlu: 'Denumire',   val: 'nume_art' },
-      { titlu: 'Furnizor',   val: 'furnizor' },
-      { titlu: 'Cantitate',  val: 'cantitate' },
-      { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
-    ], constr, total);
-  });
+  const reInit = () => {
+    activeazaFisaLink();
+    activeazaPaginare();
+    activeazaSortare(filtre, implicitSort);
+    initSortClient();
+    const btn = document.getElementById('btn-descarca');
+    if (btn) btn.addEventListener('click', () => {
+      descarcaCuBucla('retururi', [
+        { titlu: 'Săptămâna (prima zi)', val: r => fmtData(r.prima_zi) },
+        { titlu: 'Magazin',    val: r => gestiuneNumeFull(r.cod_depozit) },
+        { titlu: 'Cod',        val: 'cod_art' },
+        { titlu: 'Cod de bare',val: 'cod_bare' },
+        { titlu: 'Denumire',   val: 'nume_art' },
+        { titlu: 'Furnizor',   val: 'furnizor' },
+        { titlu: 'Cantitate',  val: 'cantitate' },
+        { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
+      ], constr, total);
+    });
+  };
+  reInit();
+  stareListe.reInitLista = reInit;
 }
 
 // ============================================================================
@@ -1569,11 +1831,12 @@ async function pagStocPeGestiuni(filtre, totalPromise) {
     <p class="mic" style="color:var(--text-dim);margin-top:6px;">Adaosul este calculat pe valori fără TVA.</p>
     ${renderPaginareHTML(from, to, total, pag)}
   `;
-  activeazaFisaLink();
-  activeazaPaginare();
-  activeazaSortare(filtre, implicitSort);
-  document.getElementById('btn-descarca').addEventListener('click', () => {
-    descarcaCuBucla('stoc-pe-gestiuni', [
+  const reInit = () => {
+    activeazaFisaLink();
+    activeazaPaginare();
+    activeazaSortare(filtre, implicitSort);
+    const btn = document.getElementById('btn-descarca');
+    if (btn) btn.addEventListener('click', () => descarcaCuBucla('stoc-pe-gestiuni', [
       { titlu: 'Gestiune',    val: r => gestiuneNumeFull(r.cod_depozit) },
       { titlu: 'Cod',         val: 'cod_art' },
       { titlu: 'Cod de bare', val: 'cod_bare' },
@@ -1589,8 +1852,10 @@ async function pagStocPeGestiuni(filtre, totalPromise) {
       { titlu: 'Preţ vânzare', val: 'pret_lista' },
       { titlu: 'Adaos',       val: 'adaos' },
       { titlu: 'Stare',       val: r => STARE_DISPLAY[r.stare] || r.stare || '' },
-    ], constr, total);
-  });
+    ], constr, total));
+  };
+  reInit();
+  stareListe.reInitLista = reInit;
 }
 
 // ============================================================================
@@ -1676,11 +1941,12 @@ async function pagStocPeProdus(filtre, totalPromise) {
     <p class="mic" style="color:var(--text-dim);margin-top:6px;">Adaosul este calculat pe valori fără TVA. Preţul de raft la depozite este fără TVA (nu avem listă de preţuri en gros).</p>
     ${renderPaginareHTML(from, to, total, pag)}
   `;
-  activeazaFisaLink();
-  activeazaPaginare();
-  activeazaSortare(filtre, implicitSort);
-  document.getElementById('btn-descarca').addEventListener('click', () => {
-    descarcaCuBucla('stoc-pe-produs', [
+  const reInit = () => {
+    activeazaFisaLink();
+    activeazaPaginare();
+    activeazaSortare(filtre, implicitSort);
+    const btn = document.getElementById('btn-descarca');
+    if (btn) btn.addEventListener('click', () => descarcaCuBucla('stoc-pe-produs', [
       { titlu: 'Cod',          val: 'cod_art' },
       { titlu: 'Cod de bare',  val: 'cod_bare' },
       { titlu: 'Denumire',     val: 'nume_art' },
@@ -1698,8 +1964,10 @@ async function pagStocPeProdus(filtre, totalPromise) {
       { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
       { titlu: 'Valoare preţ – magazine (cu TVA)',  val: 'valoare_pret_mag_cu_tva' },
       { titlu: 'Valoare preţ – depozite (fără TVA)', val: 'valoare_pret_dep_fara_tva' },
-    ], constr, total);
-  });
+    ], constr, total));
+  };
+  reInit();
+  stareListe.reInitLista = reInit;
 }
 
 // ============================================================================
@@ -1746,25 +2014,30 @@ async function pagFisa(cod) {
     </div>
 
     <h3>Stoc pe gestiune</h3>
-    <div class="tabel-wrap">
+    <div class="tabel-wrap tabel-compact">
       <table class="sort-client">
         <thead><tr>
           <th class="sort-sk" data-sk-type="text">Gestiune</th>
           <th class="nr sort-sk" data-sk-type="nr">Stoc</th>
           <th class="nr sort-sk" data-sk-type="nr">Pe drum</th>
           <th class="nr sort-sk" data-sk-type="nr">Val. cost<br>${etichetaTva(false)}</th>
-          <th class="nr sort-sk" data-sk-type="nr">Vânzări 8 săpt. (bon)</th>
-          <th class="nr sort-sk" data-sk-type="nr">Săpt. active</th>
+          <th class="nr sort-sk" data-sk-type="nr">Vânz. 8 săpt. (bon)</th>
+          <th class="nr sort-sk" data-sk-type="nr">Săpt. act.</th>
           <th class="nr sort-sk" data-sk-type="nr">Acoperire</th>
           <th class="sort-sk" data-sk-type="text">Stare</th>
           <th class="sort-sk" data-sk-type="text">Sursă</th>
-          <th class="mic sort-sk" data-sk-type="text">Ultima vânzare</th>
+          <th class="mic sort-sk" data-sk-type="text">Ult. factură</th>
+          <th class="mic sort-sk" data-sk-type="text">Ult. intrare</th>
+          <th class="mic sort-sk" data-sk-type="text">Ult. vz. gest.</th>
+          <th class="mic sort-sk" data-sk-type="text">Ult. vz. firmă</th>
         </tr></thead>
         <tbody>${pozitii
           .sort((a,b) => GESTIUNI.findIndex(g => g.cod === a.cod_depozit) - GESTIUNI.findIndex(g => g.cod === b.cod_depozit))
           .map(p => {
             const bon = Number(p.v_s1||0)+Number(p.v_s2||0)+Number(p.v_s3||0)+Number(p.v_s4||0)
                       +Number(p.v_s5||0)+Number(p.v_s6||0)+Number(p.v_s7||0)+Number(p.v_s8||0);
+            const titleFactura = p.factura_furnizor
+              ? ` title="${escapeHtml(p.factura_furnizor)}"` : '';
             return `
             <tr>
               <td data-sv="${escapeHtml(gestiuneNumeFull(p.cod_depozit))}">${escapeHtml(gestiuneNumeFull(p.cod_depozit))}</td>
@@ -1776,7 +2049,10 @@ async function pagFisa(cod) {
               <td class="nr" data-sv="${p.acoperire != null ? Number(p.acoperire) : 999999}">${p.acoperire != null ? fmtNr(p.acoperire, 1) : ''}</td>
               <td data-sv="${escapeHtml(p.stare || '')}">${stareBadge(p.stare)}</td>
               <td class="mic" data-sv="${escapeHtml(p.sursa || '')}">${escapeHtml(p.sursa || '')}</td>
-              <td class="mic" data-sv="${p.ultima_vz_gestiune || ''}">${fmtData(p.ultima_vz_gestiune)}</td>
+              <td class="mic" data-sv="${p.factura_data || ''}"${titleFactura}>${fmtDataScurta(p.factura_data)}</td>
+              <td class="mic" data-sv="${p.ultima_intrare || ''}">${fmtDataScurta(p.ultima_intrare)}</td>
+              <td class="mic" data-sv="${p.ultima_vz_gestiune || ''}">${fmtDataScurta(p.ultima_vz_gestiune)}</td>
+              <td class="mic" data-sv="${p.ultima_vz_firma || ''}">${fmtDataScurta(p.ultima_vz_firma)}</td>
             </tr>`;
         }).join('')}
         </tbody>
@@ -1812,7 +2088,31 @@ async function pagFisa(cod) {
 
 function activeazaFisaLink() {
   document.querySelectorAll('tr.clickabil[data-cod]').forEach(tr => {
-    tr.addEventListener('click', () => { location.hash = '#/fisa/' + encodeURIComponent(tr.dataset.cod); });
+    tr.addEventListener('click', () => {
+      // PAS 6 C: salvăm starea listei înainte de a pleca în fişă, ca întoarcerea
+      // prin „Înapoi" să repună lista exact unde era (fără re-fetch).
+      // Pe lângă scroll-ul ferestrei, salvăm scrollTop/scrollLeft al fiecărui
+      // .tabel-wrap (acestea au propriul scroll — max-height + overflow auto;
+      // la Stoc – Pe produs e şi scroll orizontal).
+      const bar = document.getElementById('filtre-bar');
+      const continut = document.getElementById('continut');
+      const scrollWraps = [...continut.querySelectorAll('.tabel-wrap')].map(w => ({
+        scrollTop: w.scrollTop,
+        scrollLeft: w.scrollLeft,
+      }));
+      stareListe.cache = {
+        hash: location.hash,
+        continutHtml: continut.innerHTML,
+        filtreBarHtml: bar ? bar.innerHTML : '',
+        filtreBarDisplay: bar ? bar.style.display : '',
+        scrollY: window.scrollY,
+        scrollWraps,
+        codPlecare: tr.dataset.cod,
+        reInit: stareListe.reInitLista,
+        ts: Date.now(),
+      };
+      location.hash = '#/fisa/' + encodeURIComponent(tr.dataset.cod);
+    });
   });
 }
 
