@@ -53,6 +53,17 @@ const PAGINI = [
   { cod: 'activitate',        titlu: 'Activitate', doarAdmin: true },
 ];
 
+// PAS 7 A: ce surse arată banda pe fiecare pagină (activitate nu are bandă).
+const SURSE_PER_PAG = {
+  'pe-scurt':         ['balanta', 'fisa', 'facturi', 'preturi', 'familii'],
+  'lipsuri':          ['balanta', 'fisa', 'preturi'],
+  'stagneaza':        ['balanta', 'fisa', 'facturi', 'preturi'],
+  'stocuri-negative': ['balanta', 'fisa', 'preturi'],
+  'retururi':         ['fisa'],
+  'stoc':             ['balanta', 'preturi', 'facturi', 'familii'],
+  'fisa':             ['balanta', 'fisa', 'facturi', 'preturi'],
+};
+
 const PAG_SIZE = 200;              // cate randuri pe pagina
 const DL_BATCH = 1000;             // batch pentru download in bucla
 
@@ -132,19 +143,44 @@ function etichetaTva(cuTva) {
 function capTva(titlu, cuTva) {
   return escapeHtml(titlu) + '<br>' + etichetaTva(cuTva);
 }
-function capTvaMix(titlu) {
-  // „cu TVA la magazine / fără TVA la depozite"
-  return escapeHtml(titlu) + '<br><small class="eticheta-tva">cu/fără TVA</small>';
+// PAS 7 C: decide eticheta TVA pentru preţul de vânzare din listă.
+//   scope:
+//     'magazin'  → întotdeauna 'cu' (Lipsuri, Stocuri negative)
+//     'depozit'  → întotdeauna 'fara'
+//     'mix-pos'  → depinde de filtre.g + rânduri afişate
+//   Returnează 'cu' | 'fara' | 'mix'.
+function tvaScopPagina(filtre, randuri, scope) {
+  if (scope === 'magazin') return 'cu';
+  if (scope === 'depozit') return 'fara';
+  if (filtre && filtre.g) return esteMagazin(filtre.g) ? 'cu' : 'fara';
+  if (!randuri || randuri.length === 0) return 'cu';
+  let areMag = false, areDep = false;
+  for (const r of randuri) {
+    if (esteMagazin(r.cod_depozit)) areMag = true; else areDep = true;
+    if (areMag && areDep) return 'mix';
+  }
+  return areMag ? 'cu' : 'fara';
 }
-// PAS 5 A: preţ de raft pentru un rând din ar_pozitii — depinde de tipul gestiunii.
-function pretVzHtml(r) {
+// Cap de coloană pentru „Preţ vz/buc" / „Preţ vânzare" cu eticheta corectă (fără „cu/fără TVA").
+function capPretVz(titlu, filtre, randuri, scope) {
+  const t = tvaScopPagina(filtre, randuri, scope);
+  if (t === 'mix') return escapeHtml(titlu);  // niciun label; rândurile îşi pun singure eticheta
+  return escapeHtml(titlu) + '<br>' + etichetaTva(t === 'cu');
+}
+// PAS 5 A / PAS 7 C: preţ de raft pentru un rând din ar_pozitii — depinde de tipul gestiunii.
+//   `tvaPg` vine din capPretVz: când e 'mix', adăugăm eticheta pe fiecare rând.
+function pretVzHtml(r, tvaPg) {
   const val = esteMagazin(r.cod_depozit) ? r.pret_lista : r.pret_lista_fara_tva;
-  return val ? fmtBani(val) : '';
+  if (!val) return '';
+  if (tvaPg === 'mix') return fmtBani(val) + ' ' + etichetaTva(esteMagazin(r.cod_depozit));
+  return fmtBani(val);
 }
 function pretVzVal(r) {
   // pentru CSV (număr simplu, fără TVA suffix)
   return esteMagazin(r.cod_depozit) ? r.pret_lista : r.pret_lista_fara_tva;
 }
+// PAS 7 C: coloana „TVA" în CSV — „cu" la magazin, „fără" la depozit.
+function pretVzTva(r) { return esteMagazin(r.cod_depozit) ? 'cu' : 'fără'; }
 function stareBadge(stare) {
   if (!stare) return '';
   const cls = STARE_CLASA[stare] || '';
@@ -157,6 +193,46 @@ function titluPagina(cod) {
   if (cod === 'cautare') return 'Stoc';
   const p = PAGINI.find(x => x.cod === cod);
   return p ? p.titlu : (cod || 'pagină');
+}
+
+// PAS 7 A: banda „sursele folosite şi data lor".
+//   Se cheamă pe fiecare pagină care are surse (nu pe Activitate).
+//   Avertizare: sursă mai veche de 8 zile faţă de azi SAU balanţă ≠ fişă.
+function bandaSurseHtml(codPag) {
+  const tipuri = SURSE_PER_PAG[codPag];
+  if (!tipuri || tipuri.length === 0) return '';
+  const toate = stare.surse || {};
+  const azi = new Date();
+  azi.setHours(0, 0, 0, 0);
+  const balData = toate.balanta?.data_pana_la || null;
+  const fisaData = toate.fisa?.data_pana_la || null;
+  const difBalFisa = (balData && fisaData && balData !== fisaData);
+
+  const parti = tipuri.map(tip => {
+    const s = toate[tip];
+    if (!s) return `<span class="sursa-chip gol">${escapeHtml(tip)}: —</span>`;
+    const d = s.data_pana_la ? new Date(s.data_pana_la) : null;
+    const tooZileVeche = d && (azi - d) > 8 * 86400 * 1000;
+    const avertBalFisa = difBalFisa && (tip === 'balanta' || tip === 'fisa');
+    const avert = tooZileVeche || avertBalFisa;
+    const titluTip = tip === 'balanta' ? s.eticheta : (s.eticheta || tip);
+    const prefix = tip === 'balanta' ? ': ' : ': până la ';
+    const titluHover = [
+      s.incarcat_la ? ('încărcat ' + fmtDataOra(s.incarcat_la)) : null,
+      s.fisier ? ('fișier: ' + s.fisier) : null,
+      tooZileVeche ? 'sursă mai veche de 8 zile' : null,
+      avertBalFisa ? 'balanţa şi fişa nu au aceeaşi dată' : null,
+    ].filter(Boolean).join(' · ');
+    return `<span class="sursa-chip${avert ? ' avert' : ''}"${titluHover ? ' title="'+escapeHtml(titluHover)+'"' : ''}>${escapeHtml(titluTip)}${prefix}<strong>${s.data_pana_la ? fmtData(s.data_pana_la) : '—'}</strong></span>`;
+  });
+  return `<div class="banda-surse" role="group" aria-label="Surse date">${parti.join('<span class="sep">·</span>')}</div>`;
+}
+
+async function incarcaSurse() {
+  const { data } = await stare.client.rpc('ar_surse_lista');
+  const map = {};
+  for (const r of (data || [])) map[r.tip] = r;
+  stare.surse = map;
 }
 
 function descriereActivitate(ev) {
@@ -181,6 +257,7 @@ const stare = {
   client: null,
   utilizator: null,
   stareDatelor: null,
+  surse: null,         // PAS 7 A: cache ar_surse { tip → row }
 };
 
 // PAS 6 C: cache pentru întoarcerea din fişa produsului.
@@ -380,7 +457,7 @@ async function dupaLogin() {
     return;
   }
 
-  await incarcaStareDatelor();
+  await Promise.all([incarcaStareDatelor(), incarcaSurse()]);
   construiesteMeniu();
   document.getElementById('ecran-auth').style.display = 'none';
   document.getElementById('aplicatie').style.display = '';
@@ -500,15 +577,27 @@ async function routeaza() {
 
   try {
     switch (ruta) {
-      case 'pe-scurt':         return await pagPeScurt();
-      case 'lipsuri':          return await pagLipsuri(filtre);
-      case 'stagneaza':        return await pagStagneaza(filtre);
-      case 'stocuri-negative': return await pagStocuriNegative(filtre);
-      case 'retururi':         return await pagRetururi(filtre);
-      case 'stoc':             return await pagStoc(filtre);
-      case 'fisa':             return await pagFisa(param, filtre);
-      case 'activitate':       return await pagActivitate(filtre);
-      default:                 return await pagPeScurt();
+      case 'pe-scurt':         await pagPeScurt(); break;
+      case 'lipsuri':          await pagLipsuri(filtre); break;
+      case 'stagneaza':        await pagStagneaza(filtre); break;
+      case 'stocuri-negative': await pagStocuriNegative(filtre); break;
+      case 'retururi':         await pagRetururi(filtre); break;
+      case 'stoc':             await pagStoc(filtre); break;
+      case 'fisa':             await pagFisa(param, filtre); break;
+      case 'activitate':       await pagActivitate(filtre); break;
+      default:                 await pagPeScurt(); break;
+    }
+    // PAS 7 A: sub titlul paginii, inject banda cu sursele folosite.
+    if (SURSE_PER_PAG[ruta]) {
+      const continut = document.getElementById('continut');
+      // Pe pagina „Fişa produsului", punem banda SUB blocul fisa-antet (nu între
+      // h2 şi meta) ca să rămână „titlu + meta" compact, iar banda e separată.
+      const target = (ruta === 'fisa')
+        ? continut.querySelector('.fisa-antet')
+        : continut.querySelector('h2.titlu-pagina');
+      if (target && !continut.querySelector('.banda-surse')) {
+        target.insertAdjacentHTML('afterend', bandaSurseHtml(ruta));
+      }
     }
   } catch (e) {
     console.error(e);
@@ -1139,7 +1228,7 @@ async function pagLipsuri(filtre) {
           ${thSort('stare', 'Stare', '', filtre, implicitSort)}
           ${thSort('sursa', 'Sursă', '', filtre, implicitSort)}
           ${thSortHtml('pierdere_sapt', 'Pierdere/săpt.<br>' + etichetaTva(true), 'nr', filtre, implicitSort)}
-          ${thSortHtml('pret_lista', capTvaMix('Preţ vz/buc'), 'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_lista', capPretVz('Preţ vz/buc', filtre, randuri, 'magazin'), 'nr', filtre, implicitSort)}
         </tr></thead>
         <tbody>
         ${randuri.map(r => `
@@ -1156,7 +1245,7 @@ async function pagLipsuri(filtre) {
             <td>${stareBadge(r.stare)}</td>
             <td class="mic">${escapeHtml(r.sursa || '')}</td>
             <td class="nr">${Number(r.pierdere_sapt) > 0 ? fmtBani(r.pierdere_sapt) : ''}</td>
-            <td class="nr">${pretVzHtml(r)}</td>
+            <td class="nr">${pretVzHtml(r, 'cu')}</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -1193,7 +1282,8 @@ function coloaneCsvLipsuri() {
     { titlu: 'Sursă',      val: 'sursa' },
     { titlu: 'Pierdere/săpt (cu TVA)', val: 'pierdere_sapt' },
     { titlu: 'Preţ achiziţie (fără TVA)', val: 'pret_achizitie' },
-    { titlu: 'Preţ vânzare/buc (cu TVA la magazine, fără TVA la depozite)', val: pretVzVal },
+    { titlu: 'Preţ vânzare/buc',  val: pretVzVal },
+    { titlu: 'TVA',               val: pretVzTva },
   ];
 }
 
@@ -1298,13 +1388,13 @@ async function pagStagneaza(filtre) {
           ${thSortHtml('pret_achizitie', 'Preţ achiziţie<br>' + etichetaTva(false), 'nr', filtre, implicitSort)}
           ${thSort('factura_data', 'Ultima factură', '', filtre, implicitSort)}
           ${thSort('ultima_intrare', 'Ultima intrare', '', filtre, implicitSort)}
-          ${thSortHtml('pret_lista', capTvaMix('Preţ vânzare'), 'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_lista', capPretVz('Preţ vânzare', filtre, randuri, 'mix-pos'), 'nr', filtre, implicitSort)}
           ${thSortHtml('valoare_cost', 'Val. cost<br>' + etichetaTva(false), 'nr', filtre, implicitSort)}
           ${thSort('ultima_vz_gestiune', 'Ult. vz. gest.', '', filtre, implicitSort)}
           ${thSort('ultima_vz_firma', 'Ult. vz. firmă', '', filtre, implicitSort)}
         </tr></thead>
         <tbody>
-        ${randuri.map(r => {
+        ${(() => { const tvaPg = tvaScopPagina(filtre, randuri, 'mix-pos'); return randuri.map(r => {
           const titleFactura = r.factura_furnizor
             ? ` title="${escapeHtml(r.factura_furnizor)}"`
             : '';
@@ -1320,12 +1410,12 @@ async function pagStagneaza(filtre) {
             <td class="nr">${r.pret_achizitie ? fmtBani(r.pret_achizitie) : ''}</td>
             <td class="mic"${titleFactura}>${fmtDataScurta(r.factura_data)}</td>
             <td class="mic">${fmtDataScurta(r.ultima_intrare)}</td>
-            <td class="nr">${pretVzHtml(r)}</td>
+            <td class="nr">${pretVzHtml(r, tvaPg)}</td>
             <td class="nr">${fmtBani(r.valoare_cost)}</td>
             <td class="mic">${fmtDataScurta(r.ultima_vz_gestiune)}</td>
             <td class="mic">${fmtDataScurta(r.ultima_vz_firma)}</td>
           </tr>`;
-        }).join('')}
+        }).join(''); })()}
         </tbody>
       </table>
     </div>
@@ -1352,7 +1442,8 @@ async function pagStagneaza(filtre) {
         { titlu: 'Ultima factură (data)',    val: r => fmtData(r.factura_data) },
         { titlu: 'Ultima factură (furnizor)',val: 'factura_furnizor' },
         { titlu: 'Ultima intrare în gestiune', val: r => fmtData(r.ultima_intrare) },
-        { titlu: 'Preţ vânzare/buc (cu TVA la magazine, fără TVA la depozite)', val: pretVzVal },
+        { titlu: 'Preţ vânzare/buc',  val: pretVzVal },
+        { titlu: 'TVA',               val: pretVzTva },
         { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
         { titlu: 'Ultima vânz. gestiune',   val: r => fmtData(r.ultima_vz_gestiune) },
         { titlu: 'Ultima vânz. firmă',      val: r => fmtData(r.ultima_vz_firma) },
@@ -1367,29 +1458,123 @@ async function pagStagneaza(filtre) {
 // PAGINA 4 — STOCURI NEGATIVE
 // ============================================================================
 
+const CAUZE_DISPLAY = {
+  'set-bucata':       'Set/bucată (BUC)',
+  'marfa in depozit': 'Marfă în depozit',
+  'fara intrare':     'Fără intrare',
+  'necunoscuta':      'Necunoscută',
+};
+
 async function pagStocuriNegative(filtre) {
-  construiesteFiltreHTML(filtre, { gestiune: 'all', descarca: true }, {});
+  // Listele pentru filtre
+  const [furnRes, famRes, famListaRes] = await Promise.all([
+    stare.client.rpc('ar_sumar_pe_furnizori', { lim: 500 }),
+    stare.client.rpc('ar_sumar_pe_familii',   { lim: 500 }),
+    stare.client.rpc('ar_lista_familii'),
+  ]);
+  const furnizori = (furnRes.data || []).map(x => x.furnizor).filter(x => x !== '(fără furnizor)').sort((a,b) => a.localeCompare(b, 'ro'));
+  const famMap = new Map((famListaRes.data || []).map(x => [x.cod_familie, x.nume_familie]));
+  const familii = (famRes.data || []).map(x => x.cod_familie).filter(x => x !== '(fără familie)').sort()
+    .map(cod => ({ cod, nume: famMap.get(cod) || '' }));
+
+  construiesteFiltreHTML(filtre, {
+    // PAS 7 (corectură): include şi depozitele (pot fi stocuri negative acolo).
+    gestiune: 'all', furnizor: true, familie: true, grupa: true,
+    cautare: true, descarca: true,
+    vedere: [
+      { val: '',                 txt: '— orice cauză —' },
+      { val: 'set-bucata',       txt: 'Set/bucată (BUC)' },
+      { val: 'marfa in depozit', txt: 'Marfă în depozit' },
+      { val: 'fara intrare',     txt: 'Fără intrare' },
+      { val: 'necunoscuta',      txt: 'Necunoscută' },
+    ],
+    vedereLabel: 'Cauză probabilă', vedereDefault: '',
+    mod: [
+      { val: 'bucati',    txt: 'Top: după bucăţi lipsă' },
+      { val: 'valoare',   txt: 'Top: după valoare' },
+      { val: 'recurenta', txt: 'Top: după recurenţă' },
+    ],
+    modDefault: 'bucati',
+  }, { furnizori, familii });
 
   const pag = Number(filtre.pag) || 1;
+  const modTop = (['bucati','valoare','recurenta'].includes(filtre.mod)) ? filtre.mod : 'bucati';
   const implicitSort = { col: 'valoare_cost', dir: 'asc' };
-  const constr = () => aplicaSortare(queryPozitii(filtre, 'negative'), filtre, implicitSort);
-  const { randuri, total, from, to } = await fetchPagina(constr, pag);
+  // Filtrele de pagină pentru RPC-uri (6 parametri).
+  const rpcArgs = {
+    p_g:     filtre.g       || null,
+    p_f:     filtre.f       || null,
+    p_fam:   filtre.fam     || null,
+    p_gr:    filtre.gr      || null,
+    p_q:     filtre.q       || null,
+    p_cauza: filtre.v       || null,
+  };
 
-  // sumar pe gestiuni: bucla pe toate pozitiile negative (pot fi 1000+)
-  const toateNeg = await fetchTot(() => queryPozitii({}, 'negative'), total);
-  const sumar = {};
-  for (const r of toateNeg) {
-    const k = r.cod_depozit;
-    sumar[k] = sumar[k] || { cod: k, nume: gestiuneNumeFull(k), poz: 0, buc: 0, valoare: 0 };
-    sumar[k].poz += 1;
-    sumar[k].buc += Number(r.stoc || 0);
-    sumar[k].valoare += Number(r.valoare_cost || 0);
+  const constr = () => {
+    // PAS 7 (corectură): include şi depozitele cu stoc < 0 (păstrăm doar e_marfa).
+    let q = stare.client.from('ar_pozitii').select('*', { count: 'exact' })
+      .eq('e_marfa', true).lt('stoc', 0);
+    if (filtre.g)   q = q.eq('cod_depozit', filtre.g);
+    if (filtre.f) {
+      if (filtre.f === '(fără furnizor)') q = q.or('furnizor.is.null,furnizor.eq.');
+      else                                q = q.eq('furnizor', filtre.f);
+    }
+    if (filtre.fam) q = q.eq('cod_familie', filtre.fam);
+    if (filtre.gr)  q = q.like('cod_familie', filtre.gr + '%');
+    if (filtre.v)   q = q.eq('neg_cauza', filtre.v);
+    if (filtre.q) {
+      const t = filtre.q.trim();
+      q = q.or(`cod_art.ilike.%${t}%,nume_art.ilike.%${t}%,cod_bare.ilike.%${t}%`);
+    }
+    return aplicaSortare(q, filtre, implicitSort);
+  };
+
+  const [listaRes, sumarRes, topRes, serieRes, reglariRes] = await Promise.all([
+    fetchPagina(constr, pag),
+    stare.client.rpc('ar_negative_sumar',   rpcArgs),
+    stare.client.rpc('ar_negative_top',     Object.assign({ p_mod: modTop, p_lim: 50 }, rpcArgs)),
+    stare.client.rpc('ar_neg_serie_sapt',   rpcArgs),
+    stare.client.rpc('ar_reglari_lunar',    rpcArgs),
+  ]);
+  const { randuri, total, from, to } = listaRes;
+
+  // Sumar pe gestiuni
+  const ss = sumarRes.data || [];
+  const totalPoz = ss.reduce((a,s)=>a+Number(s.nr_pozitii||0), 0);
+  const totalBuc = ss.reduce((a,s)=>a+Number(s.bucati||0), 0);
+  const totalVal = ss.reduce((a,s)=>a+Number(s.valoare||0), 0);
+  // Pentru sumarul de cauze (totalul pe pagina)
+  const totCauze = {
+    setbuc:       ss.reduce((a,s)=>a+Number(s.c_setbuc||0), 0),
+    marfa_dep:    ss.reduce((a,s)=>a+Number(s.c_marfa_dep||0), 0),
+    fara_intrare: ss.reduce((a,s)=>a+Number(s.c_fara_intrare||0), 0),
+    necunoscuta:  ss.reduce((a,s)=>a+Number(s.c_necunoscuta||0), 0),
+  };
+  const sumarList = ss.slice().sort((a,b) => Number(a.valoare)-Number(b.valoare));
+
+  // Top produse
+  const top = topRes.data || [];
+
+  // Grafic 1: nivel saptamanal (nr poziţii) pe total.
+  // PAS 7 (corectură): seria vine cu LEFT JOIN de la ar_balante_date, deci săptămânile
+  // fără minusuri apar cu r.cod_depozit = NULL şi nr_pozitii = 0. Creem intrarea sapt[k]
+  // din rândul NULL ca punctul 0 să apară; rândurile cu cod_depozit adaugă la total şi la mag.
+  const serie = serieRes.data || [];
+  const sapt = {};
+  for (const r of serie) {
+    const k = String(r.perioada_la).slice(0,10);
+    sapt[k] = sapt[k] || { total: 0, buc: 0, mag: {} };
+    if (r.cod_depozit) {
+      const np = Number(r.nr_pozitii || 0);
+      sapt[k].total += np;
+      sapt[k].buc   += Number(r.bucati || 0);
+      sapt[k].mag[r.cod_depozit] = np;
+    }
   }
-  const sumarList = Object.values(sumar).sort((a,b) => a.valoare - b.valoare);
+  const saptKeys = Object.keys(sapt).sort();
 
-  const totalPoz = sumarList.reduce((a,s)=>a+s.poz, 0);
-  const totalBuc = sumarList.reduce((a,s)=>a+s.buc, 0);
-  const totalVal = sumarList.reduce((a,s)=>a+s.valoare, 0);
+  // Grafic 2: reglari lunare
+  const reglari = reglariRes.data || [];
 
   document.getElementById('continut').innerHTML = `
     <h2 class="titlu-pagina">Stocuri negative</h2>
@@ -1405,10 +1590,10 @@ async function pagStocuriNegative(filtre) {
         </tr></thead>
         <tbody>${sumarList.map(s => `
           <tr>
-            <td data-sv="${escapeHtml(s.nume)}">${escapeHtml(s.nume)}</td>
-            <td class="nr" data-sv="${s.poz}">${fmtInt(s.poz)}</td>
-            <td class="nr" data-sv="${s.buc}">${fmtNr(s.buc, 2)}</td>
-            <td class="nr" data-sv="${s.valoare}">${fmtBani(s.valoare)}</td>
+            <td data-sv="${escapeHtml(gestiuneNumeFull(s.cod_depozit))}">${escapeHtml(gestiuneNumeFull(s.cod_depozit))}</td>
+            <td class="nr" data-sv="${Number(s.nr_pozitii||0)}">${fmtInt(s.nr_pozitii)}</td>
+            <td class="nr" data-sv="${Number(s.bucati||0)}">${fmtNr(s.bucati, 2)}</td>
+            <td class="nr" data-sv="${Number(s.valoare||0)}">${fmtBani(s.valoare)}</td>
           </tr>`).join('')}
         </tbody>
         <tfoot>
@@ -1422,9 +1607,102 @@ async function pagStocuriNegative(filtre) {
       </table>
     </div>
 
+    <h3>Cauze probabile</h3>
+    <div class="tabel-wrap">
+      <table class="sort-client">
+        <thead><tr>
+          <th class="sort-sk" data-sk-type="text">Cauză</th>
+          <th class="nr sort-sk" data-sk-type="nr">Număr poziţii</th>
+        </tr></thead>
+        <tbody>
+          <tr><td data-sv="Set/bucată (BUC)">Set/bucată (BUC)</td>          <td class="nr" data-sv="${totCauze.setbuc}">${fmtInt(totCauze.setbuc)}</td></tr>
+          <tr><td data-sv="Marfă în depozit">Marfă în depozit</td>          <td class="nr" data-sv="${totCauze.marfa_dep}">${fmtInt(totCauze.marfa_dep)}</td></tr>
+          <tr><td data-sv="Fără intrare">Fără intrare</td>                  <td class="nr" data-sv="${totCauze.fara_intrare}">${fmtInt(totCauze.fara_intrare)}</td></tr>
+          <tr><td data-sv="Necunoscută">Necunoscută</td>                    <td class="nr" data-sv="${totCauze.necunoscuta}">${fmtInt(totCauze.necunoscuta)}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="mic" style="color:var(--text-dim);margin-top:4px;">Cauza este o presupunere a programului, de verificat la raft.</p>
+
+    <h3>Top produse cu stoc negativ (primele 50)</h3>
+    <div class="tabel-wrap tabel-compact">
+      <table class="sort-client">
+        <thead><tr>
+          <th class="sort-sk" data-sk-type="text">Cod</th>
+          <th class="sort-sk" data-sk-type="text">Cod de bare</th>
+          <th class="col-denumire sort-sk" data-sk-type="text">Denumire</th>
+          <th class="col-furnizor sort-sk" data-sk-type="text">Furnizor</th>
+          <th class="sort-sk" data-sk-type="text">Familie</th>
+          <th class="sort-sk" data-sk-type="text">Magazine negative acum</th>
+          <th class="nr sort-sk" data-sk-type="nr">Total bucăţi</th>
+          <th class="nr sort-sk" data-sk-type="nr">Val. cost<br>${etichetaTva(false)}</th>
+          <th class="nr sort-sk" data-sk-type="nr">Negativ în<br>N/12 săpt.</th>
+          <th class="nr sort-sk" data-sk-type="nr">Nr. mag.</th>
+          <th class="nr sort-sk" data-sk-type="nr">Stoc depozit</th>
+          <th class="sort-sk" data-sk-type="text">Cauză probabilă</th>
+        </tr></thead>
+        <tbody>
+        ${top.map(t => {
+          const gest = t.gestiuni_json || {};
+          const gestStr = Object.entries(gest).map(([cod, buc]) =>
+            `${escapeHtml(gestiuneNume(cod))} ${fmtNr(buc, 0)}`).join(', ');
+          return `
+          <tr class="clickabil" data-cod="${escapeHtml(t.cod_art)}">
+            <td data-sv="${escapeHtml(t.cod_art)}"><code>${escapeHtml(t.cod_art)}</code></td>
+            <td class="col-cod-bare mic" data-sv="${escapeHtml(t.cod_bare || '')}">${escapeHtml(t.cod_bare || '')}</td>
+            <td class="col-denumire" data-sv="${escapeHtml(t.nume_art || '')}">${escapeHtml(t.nume_art || '')}</td>
+            <td class="col-furnizor mic" data-sv="${escapeHtml(t.furnizor || '')}">${escapeHtml(t.furnizor || '')}</td>
+            <td class="mic" data-sv="${escapeHtml(t.cod_familie || '')}">${escapeHtml(t.cod_familie || '')}</td>
+            <td class="mic" data-sv="${escapeHtml(gestStr)}">${gestStr}</td>
+            <td class="nr neg" data-sv="${Number(t.total_buc||0)}">${fmtNr(t.total_buc, 2)}</td>
+            <td class="nr neg" data-sv="${Number(t.valoare_cost||0)}">${fmtBani(t.valoare_cost)}</td>
+            <td class="nr" data-sv="${Number(t.nr_sapt_neg||0)}">${fmtInt(t.nr_sapt_neg)}</td>
+            <td class="nr" data-sv="${Number(t.nr_mag_neg||0)}">${fmtInt(t.nr_mag_neg)}</td>
+            <td class="nr" data-sv="${Number(t.stoc_dep||0)}">${fmtNr(t.stoc_dep, 0)}</td>
+            <td class="mic" data-sv="${escapeHtml(CAUZE_DISPLAY[t.neg_cauza] || t.neg_cauza || '')}">${escapeHtml(CAUZE_DISPLAY[t.neg_cauza] || t.neg_cauza || '')}</td>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Nivelul săptămânal (din 31.03.2026)</h3>
+    <div class="tabel-wrap grafic-wrap">
+      ${renderGraficBareSapt(saptKeys, sapt)}
+    </div>
+    <p class="mic" style="color:var(--text-dim);margin-top:4px;">
+      Balanţele lunare dinainte de martie 2026 nu au stocuri negative (sunt scoase după reglare).
+      Istoria problemei se vede mai jos, în reglările lunare.
+    </p>
+
+    <h3>Reglări lunare (inventariere)</h3>
+    <div class="tabel-wrap grafic-wrap">
+      ${renderGraficReglari(reglari)}
+    </div>
+    <div class="tabel-wrap" style="margin-top:8px;">
+      <table class="sort-client">
+        <thead><tr>
+          <th class="sort-sk" data-sk-type="text">Luna</th>
+          <th class="nr sort-sk" data-sk-type="nr">Rânduri intrate</th>
+          <th class="nr sort-sk" data-sk-type="nr">Rânduri ieşite</th>
+          <th class="nr sort-sk" data-sk-type="nr">Bucăţi intrate</th>
+          <th class="nr sort-sk" data-sk-type="nr">Bucăţi ieşite</th>
+        </tr></thead>
+        <tbody>${reglari.map(r => `
+          <tr>
+            <td class="mic" data-sv="${r.luna || ''}">${fmtData(r.luna)}</td>
+            <td class="nr" data-sv="${Number(r.rand_intr||0)}">${fmtInt(r.rand_intr)}</td>
+            <td class="nr" data-sv="${Number(r.rand_ies||0)}">${fmtInt(r.rand_ies)}</td>
+            <td class="nr" data-sv="${Number(r.buc_intr||0)}">${fmtNr(r.buc_intr, 2)}</td>
+            <td class="nr" data-sv="${Number(r.buc_ies||0)}">${fmtNr(r.buc_ies, 2)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+
     <h3>Lista produselor</h3>
     ${renderPaginareHTML(from, to, total, pag)}
-    <div class="tabel-wrap tabel-cu-sticky">
+    <div class="tabel-wrap tabel-cu-sticky tabel-compact">
       <table>
         <thead><tr>
           ${thSort('cod_depozit', 'Gestiune', '', filtre, implicitSort)}
@@ -1433,26 +1711,36 @@ async function pagStocuriNegative(filtre) {
           ${thSort('nume_art', 'Denumire', 'col-denumire', filtre, implicitSort)}
           ${thSort('furnizor', 'Furnizor', 'col-furnizor', filtre, implicitSort)}
           ${thSort('stoc', 'Stoc', 'nr', filtre, implicitSort)}
-          ${thSortHtml('valoare_cost', 'Valoare cost<br>' + etichetaTva(false), 'nr', filtre, implicitSort)}
+          ${thSortHtml('valoare_cost', 'Val. cost<br>' + etichetaTva(false), 'nr', filtre, implicitSort)}
           ${thSort('ritm', 'Ritm/săpt.', 'nr', filtre, implicitSort)}
-          ${thSortHtml('pret_lista', capTvaMix('Preţ vz/buc'), 'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_lista', capPretVz('Preţ vz/buc', filtre, randuri, 'mix-pos'), 'nr', filtre, implicitSort)}
+          ${thSort('neg_cauza', 'Cauză probabilă', '', filtre, implicitSort)}
+          ${thSort('neg_din',   'Negativ din', '', filtre, implicitSort)}
+          ${thSort('neg_sapt',  'Săpt. la rând', 'nr', filtre, implicitSort)}
         </tr></thead>
         <tbody>
-        ${randuri.map(r => `
+        ${(() => { const tvaPg = tvaScopPagina(filtre, randuri, 'mix-pos'); return randuri.map(r => `
           <tr class="clickabil" data-cod="${escapeHtml(r.cod_art)}">
             <td>${escapeHtml(gestiuneNume(r.cod_depozit))}</td>
             <td><code>${escapeHtml(r.cod_art)}</code></td>
             <td class="col-cod-bare mic">${escapeHtml(r.cod_bare || '')}</td>
             <td class="col-denumire">${escapeHtml(r.nume_art || '')}</td>
             <td class="col-furnizor mic">${escapeHtml(r.furnizor || '')}</td>
-            <td class="nr">${fmtNr(r.stoc, 2)}</td>
+            <td class="nr neg">${fmtNr(r.stoc, 2)}</td>
             <td class="nr">${fmtBani(r.valoare_cost)}</td>
             <td class="nr">${fmtNr(r.ritm, 2)}</td>
-            <td class="nr">${pretVzHtml(r)}</td>
-          </tr>`).join('')}
+            <td class="nr">${pretVzHtml(r, tvaPg)}</td>
+            <td class="mic">${escapeHtml(CAUZE_DISPLAY[r.neg_cauza] || r.neg_cauza || '')}</td>
+            <td class="mic">${fmtDataScurta(r.neg_din)}</td>
+            <td class="nr">${fmtInt(r.neg_sapt)}</td>
+          </tr>`).join(''); })()}
         </tbody>
       </table>
     </div>
+    <p class="mic" style="color:var(--text-dim);margin-top:6px;">
+      Cauza este o presupunere a programului, de verificat la raft.
+      „Negativ din" e prima balanţă săptămânală dintr-un şir neîntrerupt în care poziţia a fost negativă.
+    </p>
     ${renderPaginareHTML(from, to, total, pag)}
   `;
   const reInit = () => {
@@ -1468,15 +1756,101 @@ async function pagStocuriNegative(filtre) {
         { titlu: 'Cod de bare',val: 'cod_bare' },
         { titlu: 'Denumire',   val: 'nume_art' },
         { titlu: 'Furnizor',   val: 'furnizor' },
+        { titlu: 'Familie',    val: 'cod_familie' },
         { titlu: 'Stoc',       val: 'stoc' },
         { titlu: 'Valoare cost (fără TVA)', val: 'valoare_cost' },
         { titlu: 'Ritm',       val: 'ritm' },
-        { titlu: 'Preţ vânzare/buc (cu TVA la magazine, fără TVA la depozite)', val: pretVzVal },
+        { titlu: 'Preţ vânzare/buc',  val: pretVzVal },
+        { titlu: 'TVA',               val: pretVzTva },
+        { titlu: 'Cauză probabilă',   val: r => CAUZE_DISPLAY[r.neg_cauza] || r.neg_cauza || '' },
+        { titlu: 'Negativ din',       val: r => fmtData(r.neg_din) },
+        { titlu: 'Săpt. la rând',     val: 'neg_sapt' },
       ], constr, total);
     });
   };
   reInit();
   stareListe.reInitLista = reInit;
+}
+
+// PAS 7 B3: grafic bar săptămânal — nr. poziţii negative pe total, pentru fiecare balanţă.
+//   viewBox fix (1200×200) + width=100% → graficul ocupă toată lăţimea chenarului.
+//   Scale cu 15% rezervă peste maxim → cifra de pe bară încape mereu.
+function renderGraficBareSapt(saptKeys, sapt) {
+  if (saptKeys.length === 0) return '<div class="grafic-gol">Fără date.</div>';
+  const n = saptKeys.length;
+  const maxVal = Math.max(1, ...saptKeys.map(k => sapt[k].total));
+  const scaleMax = maxVal * 1.15;
+  const vbW = 1200, vbH = 200;
+  const padL = 10, padR = 10, padTop = 24, padBot = 40;
+  const areaW = vbW - padL - padR;
+  const areaH = vbH - padTop - padBot;
+  const slot = areaW / n;
+  const latBar = Math.min(40, slot * 0.8);
+  const bars = saptKeys.map((k, i) => {
+    const v = sapt[k].total;
+    const h = Math.round((v / scaleMax) * areaH);
+    const xC = padL + i * slot + slot / 2;
+    const x = xC - latBar / 2;
+    const y = padTop + areaH - h;
+    const perMag = Object.entries(sapt[k].mag).map(([cod, nr]) => `${gestiuneNume(cod)}: ${nr}`).join(' · ');
+    return `<g>
+      <title>${escapeHtml(fmtData(k))}: ${v} poziţii (${v > 0 ? escapeHtml(perMag) : 'zero'})</title>
+      <rect x="${x}" y="${y}" width="${latBar}" height="${Math.max(h, 1)}" fill="var(--accent)" rx="2"></rect>
+      <text x="${xC}" y="${y - 4}" text-anchor="middle" font-size="11" fill="var(--text)">${v > 0 ? v : ''}</text>
+      <text x="${xC}" y="${padTop + areaH + 14}" text-anchor="middle" font-size="10" fill="var(--text-dim)" transform="rotate(-50 ${xC} ${padTop + areaH + 14})">${fmtDataScurta(k)}</text>
+    </g>`;
+  }).join('');
+  return `<svg class="grafic-svg" viewBox="0 0 ${vbW} ${vbH}" width="100%" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+    <line x1="${padL}" y1="${padTop + areaH}" x2="${padL + areaW}" y2="${padTop + areaH}" stroke="var(--border)" stroke-width="1"></line>
+    ${bars}
+  </svg>`;
+}
+
+// PAS 7 B3: grafic bar pe reglări lunare — două bare per lună (intrate / ieşite).
+//   Legenda sus (să nu se suprapună cu etichetele lunilor). viewBox 1200×220, width=100%.
+function renderGraficReglari(reglari) {
+  if (!reglari || reglari.length === 0) return '<div class="grafic-gol">Fără reglări.</div>';
+  const n = reglari.length;
+  const maxVal = Math.max(1, ...reglari.map(r => Math.max(Number(r.rand_intr||0), Number(r.rand_ies||0))));
+  const scaleMax = maxVal * 1.15;
+  const vbW = 1200, vbH = 220;
+  const legendH = 22;
+  const padL = 10, padR = 10, padTop = legendH + 18, padBot = 28;
+  const areaW = vbW - padL - padR;
+  const areaH = vbH - padTop - padBot;
+  const slot = areaW / n;
+  const latBar = Math.min(40, (slot - 10) / 2);
+  const bars = reglari.map((r, i) => {
+    const vi = Number(r.rand_intr || 0);
+    const ve = Number(r.rand_ies  || 0);
+    const hi = Math.round((vi / scaleMax) * areaH);
+    const he = Math.round((ve / scaleMax) * areaH);
+    const xC = padL + i * slot + slot / 2;
+    const xi = xC - latBar - 2;
+    const xe = xC + 2;
+    const yi = padTop + areaH - hi;
+    const ye = padTop + areaH - he;
+    const luna = r.luna ? new Date(r.luna) : null;
+    const lunaS = luna ? String(luna.getMonth()+1).padStart(2,'0') + '.' + String(luna.getFullYear()).slice(-2) : '';
+    return `<g>
+      <title>${escapeHtml(fmtData(r.luna))} — intrate: ${vi}, ieşite: ${ve}</title>
+      <rect x="${xi}" y="${yi}" width="${latBar}" height="${Math.max(hi, 1)}" fill="var(--accent)" rx="2"></rect>
+      <rect x="${xe}" y="${ye}" width="${latBar}" height="${Math.max(he, 1)}" fill="var(--warn)" rx="2"></rect>
+      <text x="${xi + latBar/2}" y="${yi - 4}" text-anchor="middle" font-size="11" fill="var(--text)">${vi > 0 ? vi : ''}</text>
+      <text x="${xe + latBar/2}" y="${ye - 4}" text-anchor="middle" font-size="11" fill="var(--text)">${ve > 0 ? ve : ''}</text>
+      <text x="${xC}" y="${padTop + areaH + 18}" text-anchor="middle" font-size="12" fill="var(--text-dim)">${lunaS}</text>
+    </g>`;
+  }).join('');
+  return `<svg class="grafic-svg" viewBox="0 0 ${vbW} ${vbH}" width="100%" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+    <g transform="translate(${padL}, 4)">
+      <rect x="0"  y="0" width="12" height="12" fill="var(--accent)"></rect>
+      <text x="18" y="10" font-size="12" fill="var(--text-dim)">intrate</text>
+      <rect x="86" y="0" width="12" height="12" fill="var(--warn)"></rect>
+      <text x="104" y="10" font-size="12" fill="var(--text-dim)">ieşite</text>
+    </g>
+    <line x1="${padL}" y1="${padTop + areaH}" x2="${padL + areaW}" y2="${padTop + areaH}" stroke="var(--border)" stroke-width="1"></line>
+    ${bars}
+  </svg>`;
 }
 
 // ============================================================================
@@ -1800,12 +2174,12 @@ async function pagStocPeGestiuni(filtre, totalPromise) {
           ${thSort('pe_drum', 'Pe drum', 'nr', filtre, implicitSort)}
           ${thSortHtml('valoare_cost', capTva('Val. cost', false), 'nr', filtre, implicitSort)}
           ${thSortHtml('pret_achizitie', capTva('Preţ achiziţie', false), 'nr', filtre, implicitSort)}
-          ${thSortHtml('pret_lista', capTvaMix('Preţ vânzare'), 'nr', filtre, implicitSort)}
+          ${thSortHtml('pret_lista', capPretVz('Preţ vânzare', filtre, randuri, 'mix-pos'), 'nr', filtre, implicitSort)}
           ${thSort('adaos', 'Adaos', 'nr', filtre, implicitSort)}
           ${thSort('stare', 'Stare', '', filtre, implicitSort)}
         </tr></thead>
         <tbody>
-        ${randuri.map(r => {
+        ${(() => { const tvaPg = tvaScopPagina(filtre, randuri, 'mix-pos'); return randuri.map(r => {
           const tooltip = (r.factura_furnizor || r.factura_data)
             ? ` title="${escapeHtml((r.factura_furnizor || '—') + (r.factura_data ? ', ' + fmtData(r.factura_data) : ''))}"` : '';
           return `
@@ -1820,11 +2194,11 @@ async function pagStocPeGestiuni(filtre, totalPromise) {
             <td class="nr">${fmtNr(r.pe_drum, 2)}</td>
             <td class="nr">${fmtBani(r.valoare_cost)}</td>
             <td class="nr"${tooltip}>${r.pret_achizitie ? fmtBani(r.pret_achizitie) : ''}</td>
-            <td class="nr">${pretVzHtml(r)}</td>
+            <td class="nr">${pretVzHtml(r, tvaPg)}</td>
             <td class="nr">${r.adaos != null ? fmtProc(r.adaos) : ''}</td>
             <td>${stareBadge(r.stare)}</td>
           </tr>`;
-        }).join('')}
+        }).join(''); })()}
         </tbody>
       </table>
     </div>
@@ -1849,7 +2223,8 @@ async function pagStocPeGestiuni(filtre, totalPromise) {
       { titlu: 'Preţ achiziţie', val: 'pret_achizitie' },
       { titlu: 'Furnizor factură', val: 'factura_furnizor' },
       { titlu: 'Data factură', val: r => fmtData(r.factura_data) },
-      { titlu: 'Preţ vânzare', val: 'pret_lista' },
+      { titlu: 'Preţ vânzare', val: pretVzVal },
+      { titlu: 'TVA',          val: pretVzTva },
       { titlu: 'Adaos',       val: 'adaos' },
       { titlu: 'Stare',       val: r => STARE_DISPLAY[r.stare] || r.stare || '' },
     ], constr, total));
