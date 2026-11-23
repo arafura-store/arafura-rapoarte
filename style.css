@@ -441,6 +441,10 @@ th.sortabil { cursor: pointer; user-select: none; }
 th.sortabil:hover { background: var(--border); }
 th.sortabil .sage { margin-left: 4px; opacity: 0.6; font-size: 10px; }
 th.sortabil.activ .sage { opacity: 1; color: var(--accent); }
+/* PAS 8 B: pe coloanele numerice (text-align: right), săgeata de sortare se pune
+   la STÂNGA titlului, ca titlul (aliniat la dreapta) să stea exact deasupra valorilor
+   din rânduri — altfel săgeata din dreapta împinge titlul la stânga faţă de cifre. */
+th.nr.sortabil .sage { float: left; margin-left: 0; margin-right: 4px; }
 
 /* PAS 5 (corecturi): „Denumire" şi „Furnizor" se rup pe două rânduri cu lăţime maximă,
    ca listele să încapă pe 1366 px fără derulare orizontală. */
@@ -653,9 +657,17 @@ td.nr.neg { color: var(--danger); }
   }
 }
 
-/* ======== PAS 7 B3: grafice SVG inline ======== */
+/* ======== PAS 8 C: tabelul „Top produse cu stoc negativ" — un rând pe magazin,
+   cu linie subţire doar între produse diferite (nu şi între magazinele aceluiaşi produs). */
+.tabel-top-neg tbody tr > td { border-bottom: none; }
+.tabel-top-neg tbody tr.prod-start > td { border-top: 1px solid var(--border); }
+
+/* ======== PAS 7 B3 (+ PAS 8 corecție telefon): grafice SVG inline ======== */
+/* overflow-x: auto → pe ecran îngust, SVG-ul desenat pixel-real poate fi mai lat
+   decât chenarul; apare bară de scroll în interiorul chenarului. La 1366+ SVG-ul
+   are width=100%, deci nu depăşeşte, iar bara nu se arată. */
 .grafic-wrap {
-  overflow-x: hidden;
+  overflow-x: auto;
   padding: 10px 12px;
   background: var(--card);
 }

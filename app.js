@@ -1552,8 +1552,38 @@ async function pagStocuriNegative(filtre) {
   };
   const sumarList = ss.slice().sort((a,b) => Number(a.valoare)-Number(b.valoare));
 
-  // Top produse
+  // Top produse — PAS 8 C: desfăşurare pe rând/magazin, păstrând ordinea DB a produselor.
+  //   Pentru fiecare produs: un rând pentru fiecare magazin cu stoc < 0,
+  //   ordonat după „cele mai multe bucăţi sub zero" (buc ascendent, fiindcă e negativ).
   const top = topRes.data || [];
+  const topRows = [];
+  for (const t of top) {
+    const gest = t.gestiuni_json || {};
+    const magaz = Object.entries(gest)
+      .map(([cod, buc]) => ({ cod, buc: Number(buc) }))
+      .sort((a, b) => a.buc - b.buc);
+    for (const m of magaz) {
+      topRows.push({
+        ord: topRows.length,
+        cod_art: t.cod_art,
+        cod_bare: t.cod_bare || '',
+        nume_art: t.nume_art || '',
+        furnizor: t.furnizor || '',
+        cod_familie: t.cod_familie || '',
+        mag_cod: m.cod,
+        mag_nume: gestiuneNume(m.cod),
+        buc_mag: m.buc,
+        total_buc: Number(t.total_buc || 0),
+        valoare_cost: Number(t.valoare_cost || 0),
+        nr_sapt_neg: Number(t.nr_sapt_neg || 0),
+        stoc_dep: Number(t.stoc_dep || 0),
+        neg_cauza: t.neg_cauza || '',
+      });
+    }
+  }
+  // Totaluri pe cele 50 de produse (din răspunsul DB, nu din rândurile expandate).
+  const topTotBuc = top.reduce((a, t) => a + Number(t.total_buc || 0), 0);
+  const topTotVal = top.reduce((a, t) => a + Number(t.valoare_cost || 0), 0);
 
   // Grafic 1: nivel saptamanal (nr poziţii) pe total.
   // PAS 7 (corectură): seria vine cu LEFT JOIN de la ar_balante_date, deci săptămânile
@@ -1625,44 +1655,64 @@ async function pagStocuriNegative(filtre) {
     <p class="mic" style="color:var(--text-dim);margin-top:4px;">Cauza este o presupunere a programului, de verificat la raft.</p>
 
     <h3>Top produse cu stoc negativ (primele 50)</h3>
-    <div class="tabel-wrap tabel-compact">
-      <table class="sort-client">
+    <p class="mic" style="color:var(--text-dim);margin:-6px 0 6px;">Un rând pentru fiecare magazin în care produsul este pe minus acum. Rândurile aceluiaşi produs stau împreună, cu o linie subţire între produse.</p>
+    <div class="tabel-wrap tabel-compact tabel-top-neg">
+      <table>
         <thead><tr>
-          <th class="sort-sk" data-sk-type="text">Cod</th>
-          <th class="sort-sk" data-sk-type="text">Cod de bare</th>
-          <th class="col-denumire sort-sk" data-sk-type="text">Denumire</th>
-          <th class="col-furnizor sort-sk" data-sk-type="text">Furnizor</th>
-          <th class="sort-sk" data-sk-type="text">Familie</th>
-          <th class="sort-sk" data-sk-type="text">Magazine negative acum</th>
-          <th class="nr sort-sk" data-sk-type="nr">Total bucăţi</th>
-          <th class="nr sort-sk" data-sk-type="nr">Val. cost<br>${etichetaTva(false)}</th>
-          <th class="nr sort-sk" data-sk-type="nr">Negativ în<br>N/12 săpt.</th>
-          <th class="nr sort-sk" data-sk-type="nr">Nr. mag.</th>
-          <th class="nr sort-sk" data-sk-type="nr">Stoc depozit</th>
-          <th class="sort-sk" data-sk-type="text">Cauză probabilă</th>
+          <th class="sort-top" data-key="cod_art"      data-sk-type="text" data-prod-level="1">Cod <span class="sage">⇅</span></th>
+          <th class="sort-top" data-key="cod_bare"     data-sk-type="text" data-prod-level="1">Cod de bare <span class="sage">⇅</span></th>
+          <th class="col-denumire sort-top" data-key="nume_art" data-sk-type="text" data-prod-level="1">Denumire <span class="sage">⇅</span></th>
+          <th class="col-furnizor sort-top" data-key="furnizor" data-sk-type="text" data-prod-level="1">Furnizor <span class="sage">⇅</span></th>
+          <th class="sort-top" data-key="cod_familie"  data-sk-type="text" data-prod-level="1">Familie <span class="sage">⇅</span></th>
+          <th class="sort-top" data-key="mag_nume"     data-sk-type="text" data-prod-level="0">Magazin <span class="sage">⇅</span></th>
+          <th class="nr sort-top" data-key="buc_mag"       data-sk-type="nr" data-prod-level="0">Buc. sub zero<br>în magazin <span class="sage">⇅</span></th>
+          <th class="nr sort-top" data-key="total_buc"     data-sk-type="nr" data-prod-level="1">Total produs<br>(buc) <span class="sage">⇅</span></th>
+          <th class="nr sort-top" data-key="valoare_cost"  data-sk-type="nr" data-prod-level="1">Valoare produs<br>la cost ${etichetaTva(false)} <span class="sage">⇅</span></th>
+          <th class="nr sort-top" data-key="nr_sapt_neg"   data-sk-type="nr" data-prod-level="1">Negativ în<br>N/12 săpt. <span class="sage">⇅</span></th>
+          <th class="nr sort-top" data-key="stoc_dep"      data-sk-type="nr" data-prod-level="1">Stoc în<br>depozit <span class="sage">⇅</span></th>
+          <th class="sort-top" data-key="neg_cauza"    data-sk-type="text" data-prod-level="1">Cauză probabilă <span class="sage">⇅</span></th>
         </tr></thead>
         <tbody>
-        ${top.map(t => {
-          const gest = t.gestiuni_json || {};
-          const gestStr = Object.entries(gest).map(([cod, buc]) =>
-            `${escapeHtml(gestiuneNume(cod))} ${fmtNr(buc, 0)}`).join(', ');
-          return `
-          <tr class="clickabil" data-cod="${escapeHtml(t.cod_art)}">
-            <td data-sv="${escapeHtml(t.cod_art)}"><code>${escapeHtml(t.cod_art)}</code></td>
-            <td class="col-cod-bare mic" data-sv="${escapeHtml(t.cod_bare || '')}">${escapeHtml(t.cod_bare || '')}</td>
-            <td class="col-denumire" data-sv="${escapeHtml(t.nume_art || '')}">${escapeHtml(t.nume_art || '')}</td>
-            <td class="col-furnizor mic" data-sv="${escapeHtml(t.furnizor || '')}">${escapeHtml(t.furnizor || '')}</td>
-            <td class="mic" data-sv="${escapeHtml(t.cod_familie || '')}">${escapeHtml(t.cod_familie || '')}</td>
-            <td class="mic" data-sv="${escapeHtml(gestStr)}">${gestStr}</td>
-            <td class="nr neg" data-sv="${Number(t.total_buc||0)}">${fmtNr(t.total_buc, 2)}</td>
-            <td class="nr neg" data-sv="${Number(t.valoare_cost||0)}">${fmtBani(t.valoare_cost)}</td>
-            <td class="nr" data-sv="${Number(t.nr_sapt_neg||0)}">${fmtInt(t.nr_sapt_neg)}</td>
-            <td class="nr" data-sv="${Number(t.nr_mag_neg||0)}">${fmtInt(t.nr_mag_neg)}</td>
-            <td class="nr" data-sv="${Number(t.stoc_dep||0)}">${fmtNr(t.stoc_dep, 0)}</td>
-            <td class="mic" data-sv="${escapeHtml(CAUZE_DISPLAY[t.neg_cauza] || t.neg_cauza || '')}">${escapeHtml(CAUZE_DISPLAY[t.neg_cauza] || t.neg_cauza || '')}</td>
-          </tr>`;
-        }).join('')}
+        ${topRows.map(r => `
+          <tr class="clickabil" data-cod="${escapeHtml(r.cod_art)}"
+              data-ord="${r.ord}"
+              data-cod_art="${escapeHtml(r.cod_art)}"
+              data-cod_bare="${escapeHtml(r.cod_bare)}"
+              data-nume_art="${escapeHtml(r.nume_art)}"
+              data-furnizor="${escapeHtml(r.furnizor)}"
+              data-cod_familie="${escapeHtml(r.cod_familie)}"
+              data-mag_nume="${escapeHtml(r.mag_nume)}"
+              data-buc_mag="${r.buc_mag}"
+              data-total_buc="${r.total_buc}"
+              data-valoare_cost="${r.valoare_cost}"
+              data-nr_sapt_neg="${r.nr_sapt_neg}"
+              data-stoc_dep="${r.stoc_dep}"
+              data-neg_cauza="${escapeHtml(r.neg_cauza)}">
+            <td><code>${escapeHtml(r.cod_art)}</code></td>
+            <td class="col-cod-bare mic">${escapeHtml(r.cod_bare)}</td>
+            <td class="col-denumire">${escapeHtml(r.nume_art)}</td>
+            <td class="col-furnizor mic">${escapeHtml(r.furnizor)}</td>
+            <td class="mic">${escapeHtml(r.cod_familie)}</td>
+            <td>${escapeHtml(r.mag_nume)}</td>
+            <td class="nr neg">${fmtNr(r.buc_mag, 0)}</td>
+            <td class="nr neg">${fmtNr(r.total_buc, 2)}</td>
+            <td class="nr neg">${fmtBani(r.valoare_cost)}</td>
+            <td class="nr">${fmtInt(r.nr_sapt_neg)}</td>
+            <td class="nr">${fmtNr(r.stoc_dep, 0)}</td>
+            <td class="mic">${escapeHtml(CAUZE_DISPLAY[r.neg_cauza] || r.neg_cauza)}</td>
+          </tr>`).join('')}
         </tbody>
+        <tfoot>
+          <tr class="rand-total">
+            <td colspan="6"><strong>Total pe cele ${top.length} de produse (din baza de date)</strong></td>
+            <td class="nr"></td>
+            <td class="nr"><strong>${fmtNr(topTotBuc, 2)}</strong></td>
+            <td class="nr"><strong>${fmtBani(topTotVal)}</strong></td>
+            <td class="nr"></td>
+            <td class="nr"></td>
+            <td></td>
+          </tr>
+        </tfoot>
       </table>
     </div>
 
@@ -1748,6 +1798,7 @@ async function pagStocuriNegative(filtre) {
     activeazaPaginare();
     activeazaSortare(filtre, implicitSort);
     initSortClient();
+    initSortTopNeg();
     const btn = document.getElementById('btn-descarca');
     if (btn) btn.addEventListener('click', () => {
       descarcaCuBucla('stocuri-negative', [
@@ -1772,20 +1823,58 @@ async function pagStocuriNegative(filtre) {
   stareListe.reInitLista = reInit;
 }
 
-// PAS 7 B3: grafic bar săptămânal — nr. poziţii negative pe total, pentru fiecare balanţă.
-//   viewBox fix (1200×200) + width=100% → graficul ocupă toată lăţimea chenarului.
-//   Scale cu 15% rezervă peste maxim → cifra de pe bară încape mereu.
+// PAS 8 A (+ corecție telefon): grafic bar săptămânal — nr. poziţii negative.
+//   • Ecran lat (≥ 1100 px): viewBox 1200×280 + width=100% (scalare uniformă). La 1366+
+//     nu se schimbă nimic faţă de implementarea de dinainte; font 12 (= .mic din pagină).
+//   • Ecran îngust (< 1100 px, telefon, tabletă): px reali, înălţime 240 px, font 11 px
+//     ABSOLUT (nu scalat), lăţime = cât încape chenarul SAU, dacă barele nu încap la
+//     lăţimea minimă (22 px/bară), mai lat şi se derulează lateral în chenar.
 function renderGraficBareSapt(saptKeys, sapt) {
   if (saptKeys.length === 0) return '<div class="grafic-gol">Fără date.</div>';
   const n = saptKeys.length;
   const maxVal = Math.max(1, ...saptKeys.map(k => sapt[k].total));
   const scaleMax = maxVal * 1.15;
-  const vbW = 1200, vbH = 200;
-  const padL = 10, padR = 10, padTop = 24, padBot = 40;
-  const areaW = vbW - padL - padR;
-  const areaH = vbH - padTop - padBot;
+  const vp = window.innerWidth || 1366;
+
+  // --- MOD LARG (≥ 1100 px) — neschimbat ---
+  if (vp >= 1100) {
+    const vbW = 1200, vbH = 280;
+    const padL = 16, padR = 16, padTop = 28, padBot = 90;
+    const areaW = vbW - padL - padR;
+    const areaH = vbH - padTop - padBot;
+    const slot = areaW / n;
+    const latBar = Math.min(40, slot * 0.8);
+    const bars = saptKeys.map((k, i) => {
+      const v = sapt[k].total;
+      const h = Math.round((v / scaleMax) * areaH);
+      const xC = padL + i * slot + slot / 2;
+      const x = xC - latBar / 2;
+      const y = padTop + areaH - h;
+      const perMag = Object.entries(sapt[k].mag).map(([cod, nr]) => `${gestiuneNume(cod)}: ${nr}`).join(' · ');
+      const lblY = padTop + areaH + 16;
+      return `<g>
+        <title>${escapeHtml(fmtData(k))}: ${v} poziţii (${v > 0 ? escapeHtml(perMag) : 'zero'})</title>
+        <rect x="${x}" y="${y}" width="${latBar}" height="${Math.max(h, 1)}" fill="var(--accent)" rx="2"></rect>
+        <text x="${xC}" y="${y - 5}" text-anchor="middle" font-size="12" fill="var(--text)">${v > 0 ? v : ''}</text>
+        <text x="${xC}" y="${lblY}" text-anchor="end" font-size="12" fill="var(--text-dim)" transform="rotate(-50 ${xC} ${lblY})">${fmtDataScurta(k)}</text>
+      </g>`;
+    }).join('');
+    return `<svg class="grafic-svg" viewBox="0 0 ${vbW} ${vbH}" width="100%" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+      <line x1="${padL}" y1="${padTop + areaH}" x2="${padL + areaW}" y2="${padTop + areaH}" stroke="var(--border)" stroke-width="1"></line>
+      ${bars}
+    </svg>`;
+  }
+
+  // --- MOD ÎNGUST (< 1100 px) — pixel-real, font 11 absolut, scroll la nevoie ---
+  const H = 240;
+  const padL = 12, padR = 12, padTop = 24, padBot = 94;
+  const slotMin = 22;
+  const contW = Math.max(vp - 40, 320);
+  const naturalW = Math.max(contW, n * slotMin + padL + padR);
+  const areaW = naturalW - padL - padR;
+  const areaH = H - padTop - padBot;
   const slot = areaW / n;
-  const latBar = Math.min(40, slot * 0.8);
+  const latBar = Math.min(28, slot * 0.8);
   const bars = saptKeys.map((k, i) => {
     const v = sapt[k].total;
     const h = Math.round((v / scaleMax) * areaH);
@@ -1793,33 +1882,82 @@ function renderGraficBareSapt(saptKeys, sapt) {
     const x = xC - latBar / 2;
     const y = padTop + areaH - h;
     const perMag = Object.entries(sapt[k].mag).map(([cod, nr]) => `${gestiuneNume(cod)}: ${nr}`).join(' · ');
+    const lblY = padTop + areaH + 14;
     return `<g>
       <title>${escapeHtml(fmtData(k))}: ${v} poziţii (${v > 0 ? escapeHtml(perMag) : 'zero'})</title>
       <rect x="${x}" y="${y}" width="${latBar}" height="${Math.max(h, 1)}" fill="var(--accent)" rx="2"></rect>
       <text x="${xC}" y="${y - 4}" text-anchor="middle" font-size="11" fill="var(--text)">${v > 0 ? v : ''}</text>
-      <text x="${xC}" y="${padTop + areaH + 14}" text-anchor="middle" font-size="10" fill="var(--text-dim)" transform="rotate(-50 ${xC} ${padTop + areaH + 14})">${fmtDataScurta(k)}</text>
+      <text x="${xC}" y="${lblY}" text-anchor="end" font-size="11" fill="var(--text-dim)" transform="rotate(-50 ${xC} ${lblY})">${fmtDataScurta(k)}</text>
     </g>`;
   }).join('');
-  return `<svg class="grafic-svg" viewBox="0 0 ${vbW} ${vbH}" width="100%" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+  return `<svg class="grafic-svg" style="width:${naturalW}px;height:${H}px" viewBox="0 0 ${naturalW} ${H}" width="${naturalW}" height="${H}" xmlns="http://www.w3.org/2000/svg">
     <line x1="${padL}" y1="${padTop + areaH}" x2="${padL + areaW}" y2="${padTop + areaH}" stroke="var(--border)" stroke-width="1"></line>
     ${bars}
   </svg>`;
 }
 
-// PAS 7 B3: grafic bar pe reglări lunare — două bare per lună (intrate / ieşite).
-//   Legenda sus (să nu se suprapună cu etichetele lunilor). viewBox 1200×220, width=100%.
+// PAS 8 A (+ corecție telefon): grafic bar pe reglări lunare — intrate/ieşite per lună.
+//   Aceeaşi strategie: ecran lat neschimbat; ecran îngust pixel-real cu scroll la nevoie.
 function renderGraficReglari(reglari) {
   if (!reglari || reglari.length === 0) return '<div class="grafic-gol">Fără reglări.</div>';
   const n = reglari.length;
   const maxVal = Math.max(1, ...reglari.map(r => Math.max(Number(r.rand_intr||0), Number(r.rand_ies||0))));
   const scaleMax = maxVal * 1.15;
-  const vbW = 1200, vbH = 220;
+  const vp = window.innerWidth || 1366;
+
+  // --- MOD LARG (≥ 1100 px) — neschimbat ---
+  if (vp >= 1100) {
+    const vbW = 1200, vbH = 240;
+    const legendH = 22;
+    const padL = 16, padR = 16, padTop = legendH + 18, padBot = 40;
+    const areaW = vbW - padL - padR;
+    const areaH = vbH - padTop - padBot;
+    const slot = areaW / n;
+    const latBar = Math.min(40, (slot - 10) / 2);
+    const bars = reglari.map((r, i) => {
+      const vi = Number(r.rand_intr || 0);
+      const ve = Number(r.rand_ies  || 0);
+      const hi = Math.round((vi / scaleMax) * areaH);
+      const he = Math.round((ve / scaleMax) * areaH);
+      const xC = padL + i * slot + slot / 2;
+      const xi = xC - latBar - 2;
+      const xe = xC + 2;
+      const yi = padTop + areaH - hi;
+      const ye = padTop + areaH - he;
+      const luna = r.luna ? new Date(r.luna) : null;
+      const lunaS = luna ? String(luna.getMonth()+1).padStart(2,'0') + '.' + String(luna.getFullYear()).slice(-2) : '';
+      return `<g>
+        <title>${escapeHtml(fmtData(r.luna))} — intrate: ${vi}, ieşite: ${ve}</title>
+        <rect x="${xi}" y="${yi}" width="${latBar}" height="${Math.max(hi, 1)}" fill="var(--accent)" rx="2"></rect>
+        <rect x="${xe}" y="${ye}" width="${latBar}" height="${Math.max(he, 1)}" fill="var(--warn)" rx="2"></rect>
+        <text x="${xi + latBar/2}" y="${yi - 5}" text-anchor="middle" font-size="12" fill="var(--text)">${vi > 0 ? vi : ''}</text>
+        <text x="${xe + latBar/2}" y="${ye - 5}" text-anchor="middle" font-size="12" fill="var(--text)">${ve > 0 ? ve : ''}</text>
+        <text x="${xC}" y="${padTop + areaH + 22}" text-anchor="middle" font-size="12" fill="var(--text-dim)">${lunaS}</text>
+      </g>`;
+    }).join('');
+    return `<svg class="grafic-svg" viewBox="0 0 ${vbW} ${vbH}" width="100%" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+      <g transform="translate(${padL}, 4)">
+        <rect x="0"  y="0" width="12" height="12" fill="var(--accent)"></rect>
+        <text x="18" y="10" font-size="12" fill="var(--text-dim)">intrate</text>
+        <rect x="86" y="0" width="12" height="12" fill="var(--warn)"></rect>
+        <text x="104" y="10" font-size="12" fill="var(--text-dim)">ieşite</text>
+      </g>
+      <line x1="${padL}" y1="${padTop + areaH}" x2="${padL + areaW}" y2="${padTop + areaH}" stroke="var(--border)" stroke-width="1"></line>
+      ${bars}
+    </svg>`;
+  }
+
+  // --- MOD ÎNGUST (< 1100 px) ---
+  const H = 240;
   const legendH = 22;
-  const padL = 10, padR = 10, padTop = legendH + 18, padBot = 28;
-  const areaW = vbW - padL - padR;
-  const areaH = vbH - padTop - padBot;
+  const padL = 12, padR = 12, padTop = legendH + 16, padBot = 36;
+  const slotMin = 68;   // două bare 28 + gap ≈ 12 pentru lizibilitate
+  const contW = Math.max(vp - 40, 320);
+  const naturalW = Math.max(contW, n * slotMin + padL + padR);
+  const areaW = naturalW - padL - padR;
+  const areaH = H - padTop - padBot;
   const slot = areaW / n;
-  const latBar = Math.min(40, (slot - 10) / 2);
+  const latBar = Math.min(28, (slot - 10) / 2);
   const bars = reglari.map((r, i) => {
     const vi = Number(r.rand_intr || 0);
     const ve = Number(r.rand_ies  || 0);
@@ -1838,19 +1976,80 @@ function renderGraficReglari(reglari) {
       <rect x="${xe}" y="${ye}" width="${latBar}" height="${Math.max(he, 1)}" fill="var(--warn)" rx="2"></rect>
       <text x="${xi + latBar/2}" y="${yi - 4}" text-anchor="middle" font-size="11" fill="var(--text)">${vi > 0 ? vi : ''}</text>
       <text x="${xe + latBar/2}" y="${ye - 4}" text-anchor="middle" font-size="11" fill="var(--text)">${ve > 0 ? ve : ''}</text>
-      <text x="${xC}" y="${padTop + areaH + 18}" text-anchor="middle" font-size="12" fill="var(--text-dim)">${lunaS}</text>
+      <text x="${xC}" y="${padTop + areaH + 20}" text-anchor="middle" font-size="11" fill="var(--text-dim)">${lunaS}</text>
     </g>`;
   }).join('');
-  return `<svg class="grafic-svg" viewBox="0 0 ${vbW} ${vbH}" width="100%" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+  return `<svg class="grafic-svg" style="width:${naturalW}px;height:${H}px" viewBox="0 0 ${naturalW} ${H}" width="${naturalW}" height="${H}" xmlns="http://www.w3.org/2000/svg">
     <g transform="translate(${padL}, 4)">
-      <rect x="0"  y="0" width="12" height="12" fill="var(--accent)"></rect>
-      <text x="18" y="10" font-size="12" fill="var(--text-dim)">intrate</text>
-      <rect x="86" y="0" width="12" height="12" fill="var(--warn)"></rect>
-      <text x="104" y="10" font-size="12" fill="var(--text-dim)">ieşite</text>
+      <rect x="0"  y="0" width="11" height="11" fill="var(--accent)"></rect>
+      <text x="16" y="9" font-size="11" fill="var(--text-dim)">intrate</text>
+      <rect x="76" y="0" width="11" height="11" fill="var(--warn)"></rect>
+      <text x="92" y="9" font-size="11" fill="var(--text-dim)">ieşite</text>
     </g>
     <line x1="${padL}" y1="${padTop + areaH}" x2="${padL + areaW}" y2="${padTop + areaH}" stroke="var(--border)" stroke-width="1"></line>
     ${bars}
   </svg>`;
+}
+
+// PAS 8 C: sortare pentru tabelul „Top produse cu stoc negativ" (rând pe magazin).
+//   Pe coloane de produs (data-prod-level="1"), tie-break pe ordinea iniţială (data-ord)
+//   ca rândurile aceluiaşi produs să rămână împreună, în ordinea „magazin cu cele mai
+//   multe bucăţi sub zero primul". Pe coloane de magazin, rândurile se ordonează
+//   independent, fiecare în parte.
+function initSortTopNeg() {
+  const table = document.querySelector('.tabel-top-neg table');
+  if (!table || table.dataset.sortTopInit === '1') { if (table) remarkProdStart(table.querySelector('tbody')); return; }
+  table.dataset.sortTopInit = '1';
+  const ths = [...table.querySelectorAll('thead th.sort-top')];
+  ths.forEach(th => {
+    th.classList.add('sortabil');
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', () => {
+      const prevDir = th.dataset.dir || '';
+      const dir = prevDir === 'asc' ? 'desc' : 'asc';
+      ths.forEach(h => {
+        h.dataset.dir = '';
+        h.classList.remove('activ');
+        const s = h.querySelector('.sage'); if (s) s.textContent = '⇅';
+      });
+      th.dataset.dir = dir;
+      th.classList.add('activ');
+      const s = th.querySelector('.sage'); if (s) s.textContent = dir === 'asc' ? '▲' : '▼';
+
+      const key = th.dataset.key;
+      const type = th.dataset.skType || 'text';
+      const prodLevel = th.dataset.prodLevel === '1';
+      const tbody = table.querySelector('tbody');
+      if (!tbody) return;
+      const rows = [...tbody.querySelectorAll(':scope > tr')];
+      rows.sort((a, b) => {
+        const va = a.dataset[key] ?? '';
+        const vb = b.dataset[key] ?? '';
+        let cmp;
+        if (type === 'nr') cmp = (Number(va) || 0) - (Number(vb) || 0);
+        else               cmp = String(va).localeCompare(String(vb), 'ro');
+        if (cmp !== 0) return dir === 'asc' ? cmp : -cmp;
+        if (prodLevel) {
+          // păstrează rândurile aceluiaşi produs împreună, în ordinea iniţială
+          return (Number(a.dataset.ord) || 0) - (Number(b.dataset.ord) || 0);
+        }
+        return 0;
+      });
+      rows.forEach(r => tbody.appendChild(r));
+      remarkProdStart(tbody);
+    });
+  });
+  remarkProdStart(table.querySelector('tbody'));
+}
+
+function remarkProdStart(tbody) {
+  if (!tbody) return;
+  let prev = null;
+  tbody.querySelectorAll(':scope > tr').forEach(tr => {
+    const changed = prev !== null && prev !== tr.dataset.cod;
+    tr.classList.toggle('prod-start', changed);
+    prev = tr.dataset.cod;
+  });
 }
 
 // ============================================================================
